@@ -1,6 +1,7 @@
+import tkinter as tk
+from tkinter import filedialog
 import viewer_2d
 import viewer_3d
-import tkinter as tk
 
 def run_2d_viewer():
     viewer_2d.create_2d_viewer()
