@@ -4,12 +4,12 @@ import viewer_2d
 import viewer_3d
 
 def run_2d_viewer():
-    viewer_2d.create_2d_viewer()
+    viewer_2d.open_file()
 
 def run_3d_viewer():
-    file_path = filedialog.askopenfilename(filetypes=[("NIfTI", "*.nii;*.nii.gz")])
+    file_path = filedialog.askopenfilename(filetypes=[("DICOM Series", "*.dcm"), ("NIfTI Files", "*.nii;*.nii.gz")])
     if file_path:
-        viewer_3d.render_3d_nifti(file_path)
+        viewer_3d.render_3d_image(file_path)
 
 # Tkinter Main Window
 root = tk.Tk()
