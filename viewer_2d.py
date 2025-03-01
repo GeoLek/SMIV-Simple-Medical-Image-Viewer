@@ -5,10 +5,11 @@ import image_loader
 import image_processing
 
 
-def open_file(img_label, settings):
+def open_file(img_label=None, settings=None):
     """ Opens a file dialog and displays the selected image with the selected processing options """
     file_path = filedialog.askopenfilename(filetypes=[("DICOM", "*.dcm"), ("NIfTI", "*.nii;*.nii.gz")])
-    if file_path:
+
+    if file_path and img_label and settings:  # Ensure settings and label exist
         display_image(file_path, img_label, settings)
 
 
@@ -70,7 +71,7 @@ def create_2d_viewer():
     Scale(viewer_window, from_=1, to=3, label="Contrast", variable=settings["contrast"], orient="horizontal").pack()
     Scale(viewer_window, from_=1, to=3, label="Zoom", variable=settings["zoom_factor"], orient="horizontal").pack()
 
-    # Open File Button
+    # Open File Button - Now passes the correct parameters
     btn_open = tk.Button(viewer_window, text="Open File", command=lambda: open_file(img_label, settings))
     btn_open.pack()
 
