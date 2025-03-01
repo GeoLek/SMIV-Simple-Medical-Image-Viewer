@@ -4,7 +4,7 @@ import viewer_2d
 import viewer_3d
 
 def run_2d_viewer():
-    viewer_2d.open_file()
+    viewer_2d.create_2d_viewer()
 
 def run_3d_viewer():
     file_path = filedialog.askopenfilename(filetypes=[("DICOM Series", "*.dcm"), ("NIfTI Files", "*.nii;*.nii.gz")])
