@@ -1,34 +1,52 @@
-import tkinter as tk
-from tkinter import filedialog, BooleanVar, Checkbutton
-import viewer_3d
-import image_processing
+# viewer_3d.py
+import vtk
+from vtk.util import numpy_support
+import image_loader
+import numpy as np
 
+def render_3d_image(file_path, modality):
+    """ Create a 3D volume rendering of a DICOM or NIfTI file """
+    file_type = image_loader.detect_file_type(file_path)
 
-def open_3d_file(settings):
-    """ Opens a file dialog and renders the selected 3D image with the selected processing options """
-    file_path = filedialog.askopenfilename(filetypes=[("DICOM Series", "*.dcm"), ("NIfTI Files", "*.nii;*.nii.gz")])
-    if file_path:
-        viewer_3d.render_3d_image(file_path, settings)
+    if file_type == "DICOM":
+        img_array = image_loader.load_dicom(file_path)
+        # If it's truly a 3D DICOM (multiple slices), you might need a series loader
+    elif file_type == "NIfTI":
+        img_array = image_loader.load_nifti(file_path)
+    else:
+        print("Error: Only DICOM or NIfTI can be 3D rendered.")
+        return
 
+    # If 2D (e.g., single-slice) => can't do 3D. Check shape:
+    if len(img_array.shape) < 3:
+        # Expand dims artificially just to visualize or simply return an error
+        print("Warning: The selected file is 2D, 3D rendering may not be meaningful.")
+        img_array = np.expand_dims(img_array, axis=-1)
 
-def create_3d_viewer():
-    """ Opens the 3D viewer with interactive controls """
-    viewer_window = tk.Toplevel()
-    viewer_window.title("3D Medical Image Viewer")
+    vtk_data = numpy_support.numpy_to_vtk(num_array=img_array.ravel(), deep=True, array_type=vtk.VTK_FLOAT)
 
-    settings = {
-        "hist_eq": BooleanVar(value=False),
-        "colormap": BooleanVar(value=False),
-        "brightness_contrast": BooleanVar(value=False),
-        "zoom": BooleanVar(value=False),
-    }
+    image_data = vtk.vtkImageData()
+    image_data.SetDimensions(img_array.shape)
+    image_data.GetPointData().SetScalars(vtk_data)
 
-    Checkbutton(viewer_window, text="Histogram Equalization", variable=settings["hist_eq"]).pack()
-    Checkbutton(viewer_window, text="Apply Colormap", variable=settings["colormap"]).pack()
-    Checkbutton(viewer_window, text="Brightness/Contrast", variable=settings["brightness_contrast"]).pack()
-    Checkbutton(viewer_window, text="Zoom", variable=settings["zoom"]).pack()
+    volume_mapper = vtk.vtkGPUVolumeRayCastMapper()
+    volume_mapper.SetInputData(image_data)
 
-    btn_open = tk.Button(viewer_window, text="Open File", command=lambda: open_3d_file(settings))
-    btn_open.pack()
+    volume_property = vtk.vtkVolumeProperty()
+    volume_property.ShadeOn()
+    volume = vtk.vtkVolume()
+    volume.SetMapper(volume_mapper)
+    volume.SetProperty(volume_property)
 
-    viewer_window.mainloop()
+    renderer = vtk.vtkRenderer()
+    renderer.AddVolume(volume)
+
+    render_window = vtk.vtkRenderWindow()
+    render_window.SetWindowName(f"3D Viewer - {modality}")
+    render_window.AddRenderer(renderer)
+
+    render_interactor = vtk.vtkRenderWindowInteractor()
+    render_interactor.SetRenderWindow(render_window)
+
+    render_window.Render()
+    render_interactor.Start()
