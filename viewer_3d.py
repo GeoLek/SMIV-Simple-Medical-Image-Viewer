@@ -5,23 +5,25 @@ import image_loader
 import numpy as np
 
 def render_3d_image(file_path, modality):
-    """ Create a 3D volume rendering of a DICOM or NIfTI file """
-    file_type = image_loader.detect_file_type(file_path)
+    """ Create a 3D volume rendering of a DICOM or NIfTI file. """
 
+    file_type = image_loader.detect_file_type(file_path)
     if file_type == "DICOM":
+        # Single-file DICOM is typically 2D. For real 3D, you'd need multiple .dcm slices in a folder.
         img_array = image_loader.load_dicom(file_path)
-        # If it's truly a 3D DICOM (multiple slices), you might need a series loader
+        if len(img_array.shape) < 3:
+            print("Warning: This is a single-slice DICOM, 3D rendering may not look meaningful.")
+            # Expand dims just to show something in 3D:
+            img_array = np.expand_dims(img_array, axis=-1)
     elif file_type == "NIfTI":
-        img_array = image_loader.load_nifti(file_path)
+        # True 3D volume
+        img_array = image_loader.load_nifti(file_path).astype(np.float32)
+        if len(img_array.shape) < 3:
+            print("Warning: NIfTI is actually 2D, 3D render might not be meaningful.")
+            img_array = np.expand_dims(img_array, axis=-1)
     else:
         print("Error: Only DICOM or NIfTI can be 3D rendered.")
         return
-
-    # If 2D (e.g., single-slice) => can't do 3D. Check shape:
-    if len(img_array.shape) < 3:
-        # Expand dims artificially just to visualize or simply return an error
-        print("Warning: The selected file is 2D, 3D rendering may not be meaningful.")
-        img_array = np.expand_dims(img_array, axis=-1)
 
     vtk_data = numpy_support.numpy_to_vtk(num_array=img_array.ravel(), deep=True, array_type=vtk.VTK_FLOAT)
 
