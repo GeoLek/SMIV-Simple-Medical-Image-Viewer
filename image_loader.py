@@ -7,8 +7,8 @@ from PIL import Image
 
 def detect_file_type(file_path):
     """
-    Detect whether a file is DICOM, NIfTI, or JPEG/PNG based on its content
-    (not relying on extension).
+    Detect whether a file is DICOM, NIfTI, or JPEG/PNG
+    based on its content (not relying on extension).
     """
     # 1) Try loading as DICOM
     try:
@@ -29,7 +29,7 @@ def detect_file_type(file_path):
     # 3) Try opening with Pillow => JPEG/PNG
     try:
         with Image.open(file_path) as img:
-            img.verify()  # If this doesn't fail, it's likely a valid image
+            img.verify()  # If no error -> It's a valid image
         return "JPEG/PNG"
     except Exception:
         pass
@@ -47,15 +47,13 @@ def load_dicom(file_path):
     return img_array
 
 def load_nifti(file_path):
-    """ Load NIfTI image and return NumPy array """
+    """ Load NIfTI image and return NumPy array (could be 2D or 3D) """
     nii_data = nib.load(file_path)
     img_array = nii_data.get_fdata()
     return img_array
 
 def load_jpeg_png(file_path):
     """ Load JPEG/PNG (any Pillow-supported format) and return NumPy array """
-    with Image.open(file_path) as img:
-        # Convert to grayscale or keep as RGB?
-        # We'll convert to grayscale to keep the pipeline consistent
-        img = img.convert("L")  # 'L' for 8-bit grayscale
+    # Convert to grayscale for a consistent pipeline
+    with Image.open(file_path).convert("L") as img:
         return np.array(img, dtype=np.float32)
