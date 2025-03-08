@@ -5,6 +5,7 @@ from PIL import Image, ImageTk
 import image_loader
 import image_processing
 import numpy as np
+import nibabel as nib
 
 def create_2d_viewer(file_path, modality):
     """
@@ -15,28 +16,32 @@ def create_2d_viewer(file_path, modality):
     viewer_window = tk.Toplevel()
     viewer_window.title(f"2D Viewer - {modality}")
 
-    # -- Load the original data once --
+    # Decide how to load
     file_type = image_loader.detect_file_type(file_path)
     if file_type == "DICOM":
         original_array = image_loader.load_dicom(file_path)
+
     elif file_type == "NIfTI":
         full_nifti = image_loader.load_nifti(file_path)
-        # We'll just display the middle slice in 2D
-        z_mid = full_nifti.shape[2] // 2
-        original_array = full_nifti[:, :, z_mid]
+        # If there's a third dimension, we just pick the middle slice
+        if len(full_nifti.shape) == 3:
+            z_mid = full_nifti.shape[2] // 2
+            original_array = full_nifti[:, :, z_mid]
+        else:
+            original_array = full_nifti  # 2D directly
+        # Convert to float32
+        original_array = original_array.astype(np.float32)
+
     elif file_type == "JPEG/PNG":
         original_array = image_loader.load_jpeg_png(file_path)
     else:
         print("Error: Unknown file format in create_2d_viewer.")
         return
 
-    # We keep the original array in a dictionary so we can re-apply transformations from scratch
     state = {
         "original_array": original_array,  # float32
-        "processed_array": None,           # updated each time
     }
 
-    # Create a label to display the image
     img_label = tk.Label(viewer_window)
     img_label.pack()
 
@@ -46,18 +51,18 @@ def create_2d_viewer(file_path, modality):
         "colormap": BooleanVar(value=False),
         "brightness_contrast": BooleanVar(value=False),
         "zoom": BooleanVar(value=False),
-        "brightness": IntVar(value=0),  # start at 0
-        "contrast": IntVar(value=1),    # start at 1
-        "zoom_factor": IntVar(value=1), # start at 1
+        "brightness": IntVar(value=0),
+        "contrast": IntVar(value=1),
+        "zoom_factor": IntVar(value=1),
     }
 
     # ---------- EVENT HANDLER ----------
     def update_image(*args):
         """
         Re-applies the pipeline to the original array each time
-        a slider or checkbox changes.
+        a slider or checkbox changes, to produce a 'live' update.
         """
-        # Convert to float32
+        # Start fresh from original
         img_array = state["original_array"].copy()
 
         # 1) Histogram Equalization
@@ -74,13 +79,14 @@ def create_2d_viewer(file_path, modality):
 
         # 3) Brightness / Contrast
         if settings["brightness_contrast"].get():
-            # slider might be in int, so convert to float for contrast
             brightness_val = float(settings["brightness"].get())
             contrast_val = float(settings["contrast"].get())
-            img_array = image_processing.adjust_brightness_contrast(img_array,
-                                                                     brightness=brightness_val,
-                                                                     contrast=contrast_val,
-                                                                     enabled=True)
+            img_array = image_processing.adjust_brightness_contrast(
+                img_array,
+                brightness=brightness_val,
+                contrast=contrast_val,
+                enabled=True
+            )
         else:
             img_array = image_processing.adjust_brightness_contrast(img_array, enabled=False)
 
@@ -89,18 +95,16 @@ def create_2d_viewer(file_path, modality):
             zf = float(settings["zoom_factor"].get())
             img_array = image_processing.apply_zoom(img_array, zoom_factor=zf, enabled=True)
         else:
-            img_array = image_processing.apply_zoom(img_array, enabled=False)
+            img_array = image_processing.apply_zoom(img_array, zoom_factor=1.0, enabled=False)
 
-        # Convert to uint8 for display
+        # Clip and convert to uint8
         img_array = np.clip(img_array, 0, 255).astype(np.uint8)
 
-        # Update the label
+        # Display
         img_pil = Image.fromarray(img_array)
         img_tk = ImageTk.PhotoImage(img_pil)
         img_label.config(image=img_tk)
         img_label.image = img_tk
-
-        state["processed_array"] = img_array
 
     # Checkboxes
     Checkbutton(viewer_window, text="Histogram Equalization", variable=settings["hist_eq"], command=update_image).pack()
@@ -113,5 +117,4 @@ def create_2d_viewer(file_path, modality):
     Scale(viewer_window, from_=1, to=5, label="Contrast", variable=settings["contrast"], orient="horizontal", command=update_image).pack()
     Scale(viewer_window, from_=1, to=5, label="Zoom", variable=settings["zoom_factor"], orient="horizontal", command=update_image).pack()
 
-    # Initialize the image display
-    update_image()
+    update_image()  # Initialize with the original image
