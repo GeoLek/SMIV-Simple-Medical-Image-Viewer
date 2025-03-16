@@ -14,39 +14,40 @@ def select_modality(modality):
 def open_file_viewer(modality):
     """
     Opens a file dialog for the selected modality
-    and determines if it's 2D or 3D by checking the data shape.
+    and determines if it's 2D, 3D, or 4D by checking the data shape.
     """
     file_path = filedialog.askopenfilename(
         title="Select a file",
         initialdir=".",
-        filetypes=[("All Files", "*.*")]  # Show absolutely everything
+        filetypes=[("All Files", "*.*")]
     )
     if not file_path:
         return  # User canceled selection
 
-    file_type = image_loader.detect_file_type(file_path)
+    # Detect the file type and metadata
+    file_type, _ = image_loader.detect_file_type_and_metadata(file_path)
 
-    # If JPEG/PNG => definitely 2D
     if file_type == "JPEG/PNG":
+        # Definitely 2D
         viewer_2d.create_2d_viewer(file_path, modality)
         return
 
-    if file_type == "DICOM":
-        # DICOM: We only detect single-slice DICOM with this code.
-        # If you have multi-slice (3D) DICOM, you'd need a series loader in viewer_3d.
-        viewer_2d.create_2d_viewer(file_path, modality)
+    elif file_type == "DICOM":
+        # Check if it's a **3D multi-frame** DICOM (e.g., CT/MRI volume)
+        img_array = image_loader.load_dicom(file_path)
+        if img_array.ndim == 3 and img_array.shape[-1] > 1:
+            viewer_3d.create_3d_viewer(file_path)
+        else:
+            viewer_2d.create_2d_viewer(file_path, modality)
 
     elif file_type == "NIfTI":
-        # Check if it's truly 3D or 2D
+        # Check if it's truly 3D or 4D
         try:
             nii_data = nib.load(file_path)
             shape = nii_data.shape
-            # If there's a third dimension >1 => it's 3D
-            if len(shape) == 3 and shape[2] > 1:
-                # 3D volume
-                viewer_3d.render_3d_image(file_path, modality)
+            if len(shape) >= 3 and shape[2] > 1:
+                viewer_3d.create_3d_viewer(file_path)  # Open in new viewer_3d.py
             else:
-                # 2D slice
                 viewer_2d.create_2d_viewer(file_path, modality)
         except Exception as e:
             print(f"Error reading NIfTI: {e}")
