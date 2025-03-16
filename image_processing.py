@@ -1,67 +1,100 @@
 # image_processing.py
+
 import cv2
 import numpy as np
 
-
-def apply_histogram_equalization(img_array, enabled=True):
-    if not enabled:
-        return img_array
+def apply_histogram_equalization(img_array):
     img_array = img_array.astype(np.uint8)
     return cv2.equalizeHist(img_array)
 
-
-def apply_colormap(img_array, enabled=True, colormap=cv2.COLORMAP_JET):
-    if not enabled:
-        return img_array
+def apply_colormap(img_array, colormap=cv2.COLORMAP_JET):
     img_array = img_array.astype(np.uint8)
     return cv2.applyColorMap(img_array, colormap)
 
-
-def adjust_brightness_contrast(img_array, brightness=0.0, contrast=1.0, enabled=True):
-    if not enabled:
-        return img_array
-    # brightness in range [-100, +100], contrast in [1..5]
+def adjust_brightness_contrast(img_array, brightness=0.0, contrast=1.0):
+    """
+    brightness ∈ [-100..100], contrast ∈ [1..5]
+    We'll do float_img = float_img*contrast + brightness
+    """
     float_img = img_array.astype(np.float32)
     float_img = float_img * contrast + brightness
     return float_img
 
-
-def apply_zoom(img_array, zoom_factor=1.0, enabled=True):
+def apply_zoom_centered(img_array, zoom_factor=1.0, center_x=0, center_y=0):
     """
-    Zoom logic:
-      - If zoom_factor == 1.0 or disabled => no change
-      - If zoom_factor > 1.0 => 'zoom in'
-        => take smaller center crop, then scale up to original shape
-      - If zoom_factor < 1.0 => 'zoom out' (not typical for medical, but supported)
-        => take bigger area (?), but we only have the original image...
+    Crop around (center_x, center_y) by 1/zoom_factor, then resize back.
     """
-    if not enabled or zoom_factor == 1.0:
+    if zoom_factor == 1.0:
         return img_array
 
-    height, width = img_array.shape[:2]
+    h, w = img_array.shape[:2]
+    crop_w = int(w / zoom_factor)
+    crop_h = int(h / zoom_factor)
 
-    # We'll do 'zoom in' if zoom_factor > 1 => crop out a smaller region
-    # Then scale that smaller region back to the original size.
-    if zoom_factor > 1.0:
-        crop_width = int(width / zoom_factor)
-        crop_height = int(height / zoom_factor)
-    else:
-        # zoom out logic => bigger region than the entire image?
-        # Not possible, so let's interpret zoom < 1 as ignoring or just partial
-        crop_width = int(width * zoom_factor)
-        crop_height = int(height * zoom_factor)
+    x1 = int(center_x - crop_w // 2)
+    y1 = int(center_y - crop_h // 2)
+    x2 = x1 + crop_w
+    y2 = y1 + crop_h
 
-    if crop_width < 1 or crop_height < 1:
-        return img_array  # can't crop if it's too small
+    # clip
+    if x1 < 0: x1 = 0
+    if y1 < 0: y1 = 0
+    if x2 > w: x2 = w
+    if y2 > h: y2 = h
 
-    center_x, center_y = width // 2, height // 2
-    x1 = max(center_x - crop_width // 2, 0)
-    y1 = max(center_y - crop_height // 2, 0)
-    x2 = min(x1 + crop_width, width)
-    y2 = min(y1 + crop_height, height)
+    # if invalid
+    if x2 <= x1 or y2 <= y1:
+        return img_array
 
     cropped = img_array[y1:y2, x1:x2]
+    cropped_u8 = np.clip(cropped, 0, 255).astype(np.uint8)
+    resized = cv2.resize(cropped_u8, (w, h), interpolation=cv2.INTER_LINEAR)
+    return resized.astype(np.float32)
 
-    # Now scale that region back to the original size
-    zoomed_img = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LINEAR)
-    return zoomed_img
+def apply_all_processing(
+    img_array,
+    hist_eq=False,
+    brightness_contrast=False,
+    brightness=0.0,
+    contrast=1.0,
+    colormap=False,
+    zoom_enabled=False,
+    zoom_factor=1.0,
+    zoom_center_x=0,
+    zoom_center_y=0
+):
+    """
+    Chains all processing steps in order:
+      1. Histogram Equalization (optional)
+      2. Brightness/Contrast (optional)
+      3. Colormap (optional)
+      4. Zoom (optional)
+    Returns the final processed array in float32 or uint8 (but typically we do
+    final clipping in viewer after all steps).
+    """
+
+    # Make a working copy
+    out = img_array.copy()
+
+    # 1) HistEq
+    if hist_eq:
+        out = apply_histogram_equalization(out)
+
+    # 2) Brightness/Contrast
+    if brightness_contrast:
+        out = adjust_brightness_contrast(out, brightness=brightness, contrast=contrast)
+
+    # 3) Colormap
+    if colormap:
+        out = apply_colormap(out)
+
+    # 4) Zoom
+    if zoom_enabled and zoom_factor != 1.0:
+        out = apply_zoom_centered(
+            out,
+            zoom_factor=zoom_factor,
+            center_x=zoom_center_x,
+            center_y=zoom_center_y
+        )
+
+    return out
