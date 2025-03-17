@@ -1,78 +1,52 @@
+#main.py
 # main.py
+
+import os
 import tkinter as tk
 from tkinter import filedialog
-import image_loader
-import viewer_2d
-import viewer_3d
 import nibabel as nib
+import image_loader
+import viewer_multi_slicetime  # The new multi-file, multi-slice/time viewer
+import ui_theme
 
 def select_modality(modality):
-    """ Opens the appropriate viewer based on the selected modality. """
-    if modality in ["MRI", "CT", "PET/CT", "EUS"]:
-        open_file_viewer(modality)
+    open_file_viewer(modality)
 
 def open_file_viewer(modality):
-    """
-    Opens a file dialog for the selected modality
-    and determines if it's 2D, 3D, or 4D by checking the data shape.
-    """
     file_path = filedialog.askopenfilename(
         title="Select a file",
         initialdir=".",
-        filetypes=[("All Files", "*.*")]
+        filetypes=[
+            ("All files (including no extension)", "*"),
+            ("DICOM Files", "*.dcm"),
+            ("NIfTI Files (.nii/.nii.gz)", "*.nii *.nii.gz"),
+            ("PNG/JPG Images", "*.png *.jpg *.jpeg"),
+        ]
     )
     if not file_path:
-        return  # User canceled selection
+        return  # User canceled
 
-    # Detect the file type and metadata
-    file_type, _ = image_loader.detect_file_type_and_metadata(file_path)
+    dir_path = os.path.dirname(file_path)
+    all_files = sorted(os.listdir(dir_path))
 
-    if file_type == "JPEG/PNG":
-        # Definitely 2D
-        viewer_2d.create_2d_viewer(file_path, modality)
+    recognized_paths = []
+    for f in all_files:
+        full_p = os.path.join(dir_path, f)
+        if os.path.isfile(full_p):
+            file_type, _ = image_loader.detect_file_type_and_metadata(full_p)
+            if file_type in ["DICOM", "NIfTI", "JPEG/PNG"]:
+                recognized_paths.append(full_p)
+
+    if not recognized_paths:
+        print("No recognized files in directory.")
         return
 
-    elif file_type == "DICOM":
-        # Check if it's a **3D multi-frame** DICOM (e.g., CT/MRI volume)
-        img_array = image_loader.load_dicom(file_path)
-        if img_array.ndim == 3 and img_array.shape[-1] > 1:
-            viewer_3d.create_3d_viewer(file_path)
-        else:
-            viewer_2d.create_2d_viewer(file_path, modality)
-
-    elif file_type == "NIfTI":
-        # Check if it's truly 3D or 4D
-        try:
-            nii_data = nib.load(file_path)
-            shape = nii_data.shape
-            if len(shape) >= 3 and shape[2] > 1:
-                viewer_3d.create_3d_viewer(file_path)  # Open in new viewer_3d.py
-            else:
-                viewer_2d.create_2d_viewer(file_path, modality)
-        except Exception as e:
-            print(f"Error reading NIfTI: {e}")
-    else:
-        print("Error: Unsupported or unknown file format.")
+    # Launch multi-file, multi-slice/time viewer
+    viewer_multi_slicetime.create_viewer(recognized_paths, modality)
 
 def main():
-    """ Launches the main selection window """
     root = tk.Tk()
-    root.title("Select Imaging Modality")
-
-    tk.Label(root, text="Select an Imaging Modality:", font=("Arial", 14)).pack(pady=10)
-
-    btn_mri = tk.Button(root, text="MRI", command=lambda: select_modality("MRI"), width=20)
-    btn_mri.pack(pady=5)
-
-    btn_ct = tk.Button(root, text="CT", command=lambda: select_modality("CT"), width=20)
-    btn_ct.pack(pady=5)
-
-    btn_petct = tk.Button(root, text="PET/CT", command=lambda: select_modality("PET/CT"), width=20)
-    btn_petct.pack(pady=5)
-
-    btn_eus = tk.Button(root, text="EUS", command=lambda: select_modality("EUS"), width=20)
-    btn_eus.pack(pady=5)
-
+    ui_theme.setup_ui(root, select_modality)
     root.mainloop()
 
 if __name__ == "__main__":
