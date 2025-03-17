@@ -1,3 +1,4 @@
+#viewer_3d.py
 import tkinter as tk
 from tkinter import ttk, BooleanVar, IntVar, Checkbutton, Scale
 import numpy as np
