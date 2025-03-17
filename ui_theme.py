@@ -1,6 +1,5 @@
 # ui_theme.py
 import tkinter as tk
-
 # Dark Theme Colors
 THEME = {
     "bg": "#2B3A42",  # Steel Blue-Gray
