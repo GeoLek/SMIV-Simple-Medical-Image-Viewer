@@ -4,26 +4,13 @@ from tkinter import ttk, BooleanVar, IntVar, Checkbutton, Scale
 import nibabel as nib
 import numpy as np
 from PIL import Image, ImageTk
-
 import image_loader
 import image_processing
 
-
 def create_viewer(file_paths, modality=""):
-    """
-    A viewer that:
-      1) Navigates multiple files (Prev/Next).
-      2) Navigates slices/time frames for 3D/4D images.
-      3) Applies preprocessing (hist eq, brightness/contrast, colormap, zoom).
-      4) Displays file metadata in a separate window.
-    """
-
     root = tk.Toplevel()
-    root.title("Multi-File, Multi-Slice/Time, Preprocessing Viewer")
+    root.title("Multi-File, Multi-Slice/Time, Preprocessing Viewer (Zoom + Pan)")
 
-    # ---------------------------------------------------------
-    # State variables
-    # ---------------------------------------------------------
     state = {
         "file_paths": file_paths,
         "current_file_index": 0,
@@ -33,10 +20,16 @@ def create_viewer(file_paths, modality=""):
         "z_max": 1,
         "t_max": 1,
         "zoom_factor": 1.0,
-        "zoom_enabled": False
+        "zoom_enabled": False,
+        "pan_x": 0.0,
+        "pan_y": 0.0,
+        "dragging": False,
+        "drag_start_x": 0,
+        "drag_start_y": 0,
+        "drag_start_pan_x": 0.0,
+        "drag_start_pan_y": 0.0
     }
 
-    # Preprocessing toggles
     settings = {
         "hist_eq": BooleanVar(value=False),
         "colormap": BooleanVar(value=False),
@@ -45,84 +38,155 @@ def create_viewer(file_paths, modality=""):
         "contrast": IntVar(value=1),
     }
 
-    # ---------------------------------------------------------
-    # Helper Functions (defined before UI elements!)
-    # ---------------------------------------------------------
-    def display_current_slice():
-        """ Display the slice at (z_index, t_index) with optional preprocessing. """
-        vol = state["volume"]
-        if vol is None:
-            image_label.config(image="", text="Cannot display file", compound=tk.CENTER)
+    info_label = tk.Label(root, font=("Arial", 14))
+    info_label.pack(pady=5)
+
+    image_label = tk.Label(root)
+    image_label.pack()
+
+    nav_frame = tk.Frame(root)
+    nav_frame.pack(pady=10)
+
+    def change_file(delta):
+        new_idx = (state["current_file_index"] + delta) % len(file_paths)
+        state["current_file_index"] = new_idx
+        file_slider.set(new_idx)
+        load_current_file()
+
+    btn_prev = tk.Button(nav_frame, text="<< Prev File", command=lambda: change_file(-1))
+    btn_prev.pack(side=tk.LEFT, padx=20)
+    btn_next = tk.Button(nav_frame, text="Next File >>", command=lambda: change_file(+1))
+    btn_next.pack(side=tk.LEFT, padx=20)
+
+    def on_file_slider(val):
+        idx = int(float(val))
+        state["current_file_index"] = idx
+        load_current_file()
+
+    file_slider = ttk.Scale(root, from_=0, to=len(file_paths)-1, orient="horizontal", command=on_file_slider)
+    file_slider.pack(fill=tk.X, padx=10)
+
+    z_slider = ttk.Scale(root, from_=0, to=0, orient="horizontal")
+    t_slider = ttk.Scale(root, from_=0, to=0, orient="horizontal")
+
+    def on_z_change(val):
+        state["z_index"] = int(float(val))
+        display_current_slice()
+
+    def on_t_change(val):
+        state["t_index"] = int(float(val))
+        display_current_slice()
+
+    z_slider.config(command=on_z_change)
+    t_slider.config(command=on_t_change)
+
+    preproc_frame = tk.Frame(root)
+    preproc_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+
+    Checkbutton(preproc_frame, text="Histogram Equalization", variable=settings["hist_eq"],
+                command=lambda: display_current_slice()).pack(anchor="w")
+    Checkbutton(preproc_frame, text="Apply Colormap", variable=settings["colormap"],
+                command=lambda: display_current_slice()).pack(anchor="w")
+    Checkbutton(preproc_frame, text="Brightness/Contrast", variable=settings["brightness_contrast"],
+                command=lambda: display_current_slice()).pack(anchor="w")
+
+    Scale(preproc_frame, from_=-100, to=100, label="Brightness", variable=settings["brightness"],
+          orient=tk.HORIZONTAL, command=lambda x: display_current_slice()).pack(fill=tk.X)
+    Scale(preproc_frame, from_=1, to=5, resolution=0.1, label="Contrast", variable=settings["contrast"],
+          orient=tk.HORIZONTAL, command=lambda x: display_current_slice()).pack(fill=tk.X)
+
+    zoom_var = BooleanVar(value=False)
+    def toggle_zoom():
+        state["zoom_enabled"] = zoom_var.get()
+        state["pan_x"] = 0.0
+        state["pan_y"] = 0.0
+        display_current_slice()
+
+    Checkbutton(preproc_frame, text="Enable Zoom (mouse + wheel + pan)",
+                variable=zoom_var, command=toggle_zoom).pack(anchor="w")
+
+    metadata_win = tk.Toplevel(root)
+    metadata_win.title("File Metadata")
+    metadata_label = tk.Label(metadata_win, font=("Arial", 12), justify="left")
+    metadata_label.pack(padx=10, pady=10)
+
+    def on_mouse_wheel(event):
+        if not state["zoom_enabled"]:
             return
+        step = 1.1
+        direction = +1 if event.delta > 0 else -1
+        if direction > 0:
+            state["zoom_factor"] *= step
+        else:
+            state["zoom_factor"] /= step
+        state["zoom_factor"] = max(0.5, min(10.0, state["zoom_factor"]))
+        display_current_slice()
 
-        slice_2d = vol[..., state["z_index"], state["t_index"]]
-        # Normalize to [0..255]
-        min_val, max_val = slice_2d.min(), slice_2d.max()
-        if max_val != min_val:
-            slice_2d = (slice_2d - min_val)/(max_val - min_val)*255
-        slice_2d = slice_2d.astype(np.float32)
+    def scroll_zoom(direction):
+        if not state["zoom_enabled"]:
+            return
+        step = 1.1
+        if direction > 0:
+            state["zoom_factor"] *= step
+        else:
+            state["zoom_factor"] /= step
+        state["zoom_factor"] = max(0.5, min(10.0, state["zoom_factor"]))
+        display_current_slice()
 
-        # Apply all processing
-        out = image_processing.apply_all_processing(
-            slice_2d,
-            hist_eq=settings["hist_eq"].get(),
-            brightness_contrast=settings["brightness_contrast"].get(),
-            brightness=settings["brightness"].get(),
-            contrast=settings["contrast"].get(),
-            colormap=settings["colormap"].get(),
-            zoom_enabled=state["zoom_enabled"],
-            zoom_factor=state["zoom_factor"]
-        )
+    def on_left_down(event):
+        if not state["zoom_enabled"]:
+            return
+        state["dragging"] = True
+        state["drag_start_x"] = event.x
+        state["drag_start_y"] = event.y
+        state["drag_start_pan_x"] = state["pan_x"]
+        state["drag_start_pan_y"] = state["pan_y"]
 
-        # Convert to PIL
-        out = np.clip(out, 0, 255).astype(np.uint8)
-        pil_img = Image.fromarray(out)
-        tk_img = ImageTk.PhotoImage(pil_img)
+    def on_left_up(event):
+        state["dragging"] = False
 
-        image_label.config(image=tk_img, text="", compound=tk.NONE)
-        image_label.image = tk_img
+    def on_left_drag(event):
+        if state["dragging"] and state["zoom_enabled"]:
+            dx = event.x - state["drag_start_x"]
+            dy = event.y - state["drag_start_y"]
+            state["pan_x"] = state["drag_start_pan_x"] + dx
+            state["pan_y"] = state["drag_start_pan_y"] + dy
+            display_current_slice()
 
     def load_current_file():
-        """ Load the selected file, update metadata, and set up volume shape. """
         idx = state["current_file_index"]
-        path = state["file_paths"][idx]
+        path = file_paths[idx]
         file_type, meta_str = image_loader.detect_file_type_and_metadata(path)
-
         info_label.config(text=f"[{idx+1}/{len(file_paths)}] {os.path.basename(path)} - {file_type or 'Unknown'}")
         metadata_label.config(text=meta_str)
 
         if file_type == "DICOM":
             arr = image_loader.load_dicom(path)
-            # Re-shape to 4D => (H, W, Z, T)
             if arr.ndim == 2:
-                arr = arr[..., np.newaxis, np.newaxis]   # => (H, W, 1, 1)
+                arr = arr[..., np.newaxis, np.newaxis]
             elif arr.ndim == 3:
-                arr = arr[..., np.newaxis]               # => (H, W, Z, 1)
+                arr = arr[..., np.newaxis]
             state["volume"] = arr
-
         elif file_type == "NIfTI":
             vol = nib.load(path).get_fdata()
             if vol.ndim == 2:
-                vol = vol[..., np.newaxis, np.newaxis]   # => (H, W, 1, 1)
+                vol = vol[..., np.newaxis, np.newaxis]
             elif vol.ndim == 3:
-                vol = vol[..., np.newaxis]               # => (H, W, Z, 1)
+                vol = vol[..., np.newaxis]
             state["volume"] = vol
-
         elif file_type == "JPEG/PNG":
             arr = image_loader.load_jpeg_png(path)
-            arr = arr[..., np.newaxis, np.newaxis]       # => (H, W, 1, 1)
+            arr = arr[..., np.newaxis, np.newaxis]
             state["volume"] = arr
         else:
             state["volume"] = None
 
-        # Setup Z/T sliders
         if state["volume"] is not None:
-            shape_4d = state["volume"].shape  # => (H, W, Z, T)
+            shape_4d = state["volume"].shape
             state["z_max"] = shape_4d[2]
             state["t_max"] = shape_4d[3]
-            # Reset indexes
-            state["z_index"] = min(state["z_max"]//2, state["z_max"]-1)
-            state["t_index"] = min(state["t_max"]//2, state["t_max"]-1)
+            state["z_index"] = min(state["z_max"] // 2, state["z_max"]-1)
+            state["t_index"] = min(state["t_max"] // 2, state["t_max"]-1)
 
             if state["z_max"] > 1:
                 z_slider.config(to=state["z_max"] - 1)
@@ -137,98 +201,60 @@ def create_viewer(file_paths, modality=""):
                 t_slider.pack(fill=tk.X, padx=10, pady=5)
             else:
                 t_slider.pack_forget()
-
-        # Display
-        display_current_slice()
-
-    def change_file(delta):
-        state["current_file_index"] = (state["current_file_index"] + delta) % len(file_paths)
-        load_current_file()
-
-    def update_z(val):
-        state["z_index"] = val
-        display_current_slice()
-
-    def update_t(val):
-        state["t_index"] = val
-        display_current_slice()
-
-    def toggle_zoom():
-        state["zoom_enabled"] = zoom_var.get()
-        display_current_slice()
-
-    def on_mouse_wheel(event):
-        if not state["zoom_enabled"]:
-            return
-        step = 1.1
-        if event.delta > 0:
-            state["zoom_factor"] *= step
         else:
-            state["zoom_factor"] /= step
-        state["zoom_factor"] = max(0.5, min(10.0, state["zoom_factor"]))
+            state["z_max"] = 1
+            state["t_max"] = 1
+            z_slider.pack_forget()
+            t_slider.pack_forget()
+
         display_current_slice()
 
-    # ---------------------------------------------------------
-    # Build UI elements (AFTER the helper functions)
-    # ---------------------------------------------------------
-    info_label = tk.Label(root, text="File Info", font=("Arial", 14))
-    info_label.pack(pady=5)
+    def display_current_slice():
+        vol = state["volume"]
+        if vol is None:
+            image_label.config(image="", text="Cannot display file", compound=tk.CENTER)
+            return
 
-    image_label = tk.Label(root)
-    image_label.pack()
+        slice_2d = vol[..., state["z_index"], state["t_index"]]
+        min_val, max_val = slice_2d.min(), slice_2d.max()
+        if max_val != min_val:
+            slice_2d = (slice_2d - min_val)/(max_val - min_val)*255
+        slice_2d = slice_2d.astype(np.float32)
 
-    nav_frame = tk.Frame(root)
-    nav_frame.pack(pady=10)
+        h, w = slice_2d.shape
+        # final center => (width//2 + pan_x, height//2 + pan_y)
+        center_x = float(w//2) + state["pan_x"]
+        center_y = float(h//2) + state["pan_y"]
 
-    btn_prev_file = tk.Button(nav_frame, text="<< Prev File", command=lambda: change_file(-1))
-    btn_prev_file.pack(side=tk.LEFT, padx=20)
+        out = image_processing.apply_all_processing(
+            slice_2d,
+            hist_eq=settings["hist_eq"].get(),
+            brightness_contrast=settings["brightness_contrast"].get(),
+            brightness=settings["brightness"].get(),
+            contrast=settings["contrast"].get(),
+            colormap=settings["colormap"].get(),
+            zoom_enabled=state["zoom_enabled"],
+            zoom_factor=state["zoom_factor"],
+            pan_x=state["pan_x"],  # or center_x if you want
+            pan_y=state["pan_y"]
+        )
 
-    btn_next_file = tk.Button(nav_frame, text="Next File >>", command=lambda: change_file(+1))
-    btn_next_file.pack(side=tk.LEFT, padx=20)
+        out = np.clip(out, 0, 255).astype(np.uint8)
 
-    z_slider = ttk.Scale(root, from_=0, to=0, orient="horizontal")
-    t_slider = ttk.Scale(root, from_=0, to=0, orient="horizontal")
+        pil_img = Image.fromarray(out)
+        tk_img = ImageTk.PhotoImage(pil_img)
+        image_label.config(image=tk_img, text="", compound=tk.NONE)
+        image_label.image = tk_img
 
-    # Add slider commands AFTER creation
-    z_slider.config(command=lambda v: update_z(int(float(v))))
-    t_slider.config(command=lambda v: update_t(int(float(v))))
+    root.bind("<MouseWheel>", on_mouse_wheel)
+    root.bind("<Button-4>", lambda e: scroll_zoom(+1))
+    root.bind("<Button-5>", lambda e: scroll_zoom(-1))
 
-    # Preprocessing frame
-    preproc_frame = tk.Frame(root)
-    preproc_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+    image_label.bind("<Button-1>", on_left_down)
+    image_label.bind("<B1-Motion>", on_left_drag)
+    image_label.bind("<ButtonRelease-1>", on_left_up)
 
-    cb_hist = Checkbutton(preproc_frame, text="Histogram Equalization", variable=settings["hist_eq"],
-                          command=display_current_slice)
-    cb_hist.pack(anchor="w")
-
-    cb_colormap = Checkbutton(preproc_frame, text="Apply Colormap", variable=settings["colormap"],
-                              command=display_current_slice)
-    cb_colormap.pack(anchor="w")
-
-    cb_bc = Checkbutton(preproc_frame, text="Brightness/Contrast", variable=settings["brightness_contrast"],
-                        command=display_current_slice)
-    cb_bc.pack(anchor="w")
-
-    bright_scale = Scale(preproc_frame, from_=-100, to=100, label="Brightness", variable=settings["brightness"],
-                         orient=tk.HORIZONTAL, command=lambda v: display_current_slice())
-    bright_scale.pack(fill=tk.X)
-
-    contrast_scale = Scale(preproc_frame, from_=1, to=5, resolution=0.1, label="Contrast", variable=settings["contrast"],
-                           orient=tk.HORIZONTAL, command=lambda v: display_current_slice())
-    contrast_scale.pack(fill=tk.X)
-
-    zoom_var = BooleanVar(value=False)
-    cb_zoom = Checkbutton(preproc_frame, text="Enable Zoom (mouse wheel)", variable=zoom_var, command=toggle_zoom)
-    cb_zoom.pack(anchor="w")
-
-    root.bind("<MouseWheel>", lambda e: on_mouse_wheel(e))
-
-    # Metadata window
-    metadata_win = tk.Toplevel(root)
-    metadata_win.title("File Metadata")
-    metadata_label = tk.Label(metadata_win, text="Metadata will appear here.", font=("Arial", 12), justify="left")
-    metadata_label.pack(padx=10, pady=10)
-
-    # Start with first file
+    file_slider.set(0)
     load_current_file()
+
     root.mainloop()
