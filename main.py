@@ -1,4 +1,3 @@
-#main.py
 # main.py
 
 import os
@@ -6,8 +5,8 @@ import tkinter as tk
 from tkinter import filedialog
 import nibabel as nib
 import image_loader
-import viewer_multi_slicetime  # The new multi-file, multi-slice/time viewer
 import ui_theme
+import viewer_multi_slicetime
 
 def select_modality(modality):
     open_file_viewer(modality)
@@ -38,10 +37,9 @@ def open_file_viewer(modality):
                 recognized_paths.append(full_p)
 
     if not recognized_paths:
-        print("No recognized files in directory.")
+        print("No recognized image files in directory.")
         return
 
-    # Launch multi-file, multi-slice/time viewer
     viewer_multi_slicetime.create_viewer(recognized_paths, modality)
 
 def main():
