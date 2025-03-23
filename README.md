@@ -58,16 +58,16 @@ It's written in Python using **Tkinter** (for the GUI) and **PIL/numpy/opencv** 
 
 2. Create a Virtual Environment (recommended):
    
-python -m venv venv
-source venv/bin/activate   # On Windows: venv\Scripts\activate
+   python -m venv venv
+   source venv/bin/activate   # On Windows: venv\Scripts\activate
 
 3. Install Required Libraries:
    
-pip install -r requirements.txt
+   pip install -r requirements.txt
 
 4. Run the program:
    
-python main.py
+   python main.py
 
 ## Building an Executable
 
