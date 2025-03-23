@@ -53,7 +53,7 @@ It's written in Python using **Tkinter** (for the GUI) and **PIL/numpy/opencv** 
 
 1. **Clone or Download** the repository:
    
-   git clone https://github.com/GeoLek/SMIV-Simple-Medical-Image-Viewer /n
+   git clone https://github.com/GeoLek/SMIV-Simple-Medical-Image-Viewer  
    cd SMIV-Simple-Medical-Image-Viewer
 
 2. Create a Virtual Environment (recommended):
