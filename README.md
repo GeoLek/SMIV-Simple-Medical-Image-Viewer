@@ -52,21 +52,21 @@ It's written in Python using **Tkinter** (for the GUI) and **PIL/numpy/opencv** 
 ### A) Quick Setup with pip
 
 1. **Clone or Download** the repository:
-   ```bash
+   
    git clone https://github.com/GeoLek/SMIV-Simple-Medical-Image-Viewer
    cd SMIV-Simple-Medical-Image-Viewer
 
 2. Create a Virtual Environment (recommended):
-      ```bash
+   
 python -m venv venv
 source venv/bin/activate   # On Windows: venv\Scripts\activate
 
 3. Install Required Libraries:
-      ```bash
+   
 pip install -r requirements.txt
 
-5. Run the program:
-      ```bash
+4. Run the program:
+   
 python main.py
 
 ## Building an Executable
@@ -76,10 +76,8 @@ python main.py
 If you'd like a single-file `.exe` (Windows) or `.app` (macOS) or an ELF on Linux:
 
 1. **Install** PyInstaller:
-   ```bash
    pip install pyinstaller
 2. Run:
-      ```bash
 pyinstaller --onefile main.py
 4. The dist/ folder will contain main.exe (on Windows) or just main on Linux, etc.
 5. Double-click or run it from the terminal; it launches the SMIV GUI.
