@@ -40,6 +40,12 @@ def open_file_viewer(modality):
         print("No recognized image files in directory.")
         return
 
+    # --- The key fix: move the chosen file_path to front of recognized_paths
+    if file_path in recognized_paths:
+        recognized_paths.remove(file_path)
+        recognized_paths.insert(0, file_path)
+
+    # Now the first file in recognized_paths is the one user selected
     viewer_multi_slicetime.create_viewer(recognized_paths, modality)
 
 def main():
