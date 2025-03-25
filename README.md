@@ -59,7 +59,7 @@ It's written in Python using **Tkinter** (for the GUI) and **PIL/numpy/opencv** 
 2. Create a Virtual Environment (recommended):
    
    python -m venv venv
-   source venv/bin/activate   # On Windows: venv\Scripts\activate
+   source venv/bin/activate     # On Windows: venv\Scripts\activate
 
 3. Install Required Libraries:
    
