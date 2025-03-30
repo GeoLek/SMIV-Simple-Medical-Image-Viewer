@@ -100,15 +100,6 @@ It's written in Python using **Tkinter** for the GUI, **Pillow/numpy/opencv** fo
 
 ---
 
-## TIFF/WSI Support
-
-- **Single-page TIFF** files are handled by **Pillow**.
-- **Whole-slide** files (like `.svs`, `.scn`, `.mrxs`, `.ndpi`) require **OpenSlide**.
-- SMIV automatically detects large WSI files and loads a downsampled level or bounding region to display the entire tissue. This prevents memory overload and avoids blank images.
-- You can still apply brightness/contrast, histogram equalization, colormap, zoom, and pan to the downsampled slide.
-
----
-
 ## Building an Executable
 
 ### PyInstaller (Cross-Platform)
