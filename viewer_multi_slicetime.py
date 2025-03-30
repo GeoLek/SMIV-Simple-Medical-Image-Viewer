@@ -1,3 +1,5 @@
+# viewer_multi_slicetime.py
+
 import os
 import tkinter as tk
 from tkinter import ttk, BooleanVar, IntVar, Checkbutton, Scale
@@ -9,7 +11,7 @@ import image_processing
 
 def create_viewer(file_paths, modality=""):
     root = tk.Toplevel()
-    root.title("Multi-File, Multi-Slice/Time, Preprocessing Viewer (Zoom + Pan)")
+    root.title("Multi-File, Multi-Slice/Time, Preprocessing Viewer (Zoom + Pan + TIFF/WSI)")
 
     state = {
         "file_paths": file_paths,
@@ -55,6 +57,7 @@ def create_viewer(file_paths, modality=""):
 
     btn_prev = tk.Button(nav_frame, text="<< Prev File", command=lambda: change_file(-1))
     btn_prev.pack(side=tk.LEFT, padx=20)
+
     btn_next = tk.Button(nav_frame, text="Next File >>", command=lambda: change_file(+1))
     btn_next.pack(side=tk.LEFT, padx=20)
 
@@ -66,6 +69,7 @@ def create_viewer(file_paths, modality=""):
     file_slider = ttk.Scale(root, from_=0, to=len(file_paths)-1, orient="horizontal", command=on_file_slider)
     file_slider.pack(fill=tk.X, padx=10)
 
+    # Sliders for Z (3D) and T (4D)
     z_slider = ttk.Scale(root, from_=0, to=0, orient="horizontal")
     t_slider = ttk.Scale(root, from_=0, to=0, orient="horizontal")
 
@@ -90,10 +94,13 @@ def create_viewer(file_paths, modality=""):
     Checkbutton(preproc_frame, text="Brightness/Contrast", variable=settings["brightness_contrast"],
                 command=lambda: display_current_slice()).pack(anchor="w")
 
-    Scale(preproc_frame, from_=-100, to=100, label="Brightness", variable=settings["brightness"],
-          orient=tk.HORIZONTAL, command=lambda x: display_current_slice()).pack(fill=tk.X)
-    Scale(preproc_frame, from_=1, to=5, resolution=0.1, label="Contrast", variable=settings["contrast"],
-          orient=tk.HORIZONTAL, command=lambda x: display_current_slice()).pack(fill=tk.X)
+    Scale(preproc_frame, from_=-100, to=100, label="Brightness",
+          variable=settings["brightness"], orient=tk.HORIZONTAL,
+          command=lambda x: display_current_slice()).pack(fill=tk.X)
+
+    Scale(preproc_frame, from_=1, to=5, resolution=0.1, label="Contrast",
+          variable=settings["contrast"], orient=tk.HORIZONTAL,
+          command=lambda x: display_current_slice()).pack(fill=tk.X)
 
     zoom_var = BooleanVar(value=False)
     def toggle_zoom():
@@ -153,6 +160,7 @@ def create_viewer(file_paths, modality=""):
             state["pan_y"] = state["drag_start_pan_y"] + dy
             display_current_slice()
 
+    # The main loader
     def load_current_file():
         idx = state["current_file_index"]
         path = file_paths[idx]
@@ -160,23 +168,27 @@ def create_viewer(file_paths, modality=""):
         info_label.config(text=f"[{idx+1}/{len(file_paths)}] {os.path.basename(path)} - {file_type or 'Unknown'}")
         metadata_label.config(text=meta_str)
 
-        if file_type == "DICOM":
-            arr = image_loader.load_dicom(path)
+        arr = None
+        if file_type in ["DICOM", "NIfTI", "JPEG/PNG", "TIFF", "WHOLESLIDE"]:
+            if file_type == "DICOM":
+                arr = image_loader.load_dicom(path)
+            elif file_type == "NIfTI":
+                arr = nib.load(path).get_fdata()
+            elif file_type == "JPEG/PNG":
+                arr = image_loader.load_jpeg_png(path)
+            elif file_type == "TIFF":
+                arr = image_loader.load_tiff(path)
+            elif file_type == "WHOLESLIDE":
+                arr = image_loader.load_whole_slide(path)
+        else:
+            arr = None
+
+        if arr is not None:
+            # Convert to 4D => (H, W, Z, T)
             if arr.ndim == 2:
-                arr = arr[..., np.newaxis, np.newaxis]
+                arr = arr[..., np.newaxis, np.newaxis]  # 2D => (H, W, 1, 1)
             elif arr.ndim == 3:
-                arr = arr[..., np.newaxis]
-            state["volume"] = arr
-        elif file_type == "NIfTI":
-            vol = nib.load(path).get_fdata()
-            if vol.ndim == 2:
-                vol = vol[..., np.newaxis, np.newaxis]
-            elif vol.ndim == 3:
-                vol = vol[..., np.newaxis]
-            state["volume"] = vol
-        elif file_type == "JPEG/PNG":
-            arr = image_loader.load_jpeg_png(path)
-            arr = arr[..., np.newaxis, np.newaxis]
+                arr = arr[..., np.newaxis]  # 3D => (H, W, Z, 1)
             state["volume"] = arr
         else:
             state["volume"] = None
@@ -185,8 +197,8 @@ def create_viewer(file_paths, modality=""):
             shape_4d = state["volume"].shape
             state["z_max"] = shape_4d[2]
             state["t_max"] = shape_4d[3]
-            state["z_index"] = min(state["z_max"] // 2, state["z_max"]-1)
-            state["t_index"] = min(state["t_max"] // 2, state["t_max"]-1)
+            state["z_index"] = min(state["z_max"] // 2, state["z_max"] - 1)
+            state["t_index"] = min(state["t_max"] // 2, state["t_max"] - 1)
 
             if state["z_max"] > 1:
                 z_slider.config(to=state["z_max"] - 1)
@@ -215,17 +227,15 @@ def create_viewer(file_paths, modality=""):
             image_label.config(image="", text="Cannot display file", compound=tk.CENTER)
             return
 
+        # (H, W, Z, T)
         slice_2d = vol[..., state["z_index"], state["t_index"]]
+        # Scale to [0..255]
         min_val, max_val = slice_2d.min(), slice_2d.max()
         if max_val != min_val:
-            slice_2d = (slice_2d - min_val)/(max_val - min_val)*255
+            slice_2d = (slice_2d - min_val) / (max_val - min_val) * 255
         slice_2d = slice_2d.astype(np.float32)
 
-        h, w = slice_2d.shape
-        # final center => (width//2 + pan_x, height//2 + pan_y)
-        center_x = float(w//2) + state["pan_x"]
-        center_y = float(h//2) + state["pan_y"]
-
+        # Apply standard 2D pipeline with zoom/pan
         out = image_processing.apply_all_processing(
             slice_2d,
             hist_eq=settings["hist_eq"].get(),
@@ -235,10 +245,9 @@ def create_viewer(file_paths, modality=""):
             colormap=settings["colormap"].get(),
             zoom_enabled=state["zoom_enabled"],
             zoom_factor=state["zoom_factor"],
-            pan_x=state["pan_x"],  # or center_x if you want
+            pan_x=state["pan_x"],
             pan_y=state["pan_y"]
         )
-
         out = np.clip(out, 0, 255).astype(np.uint8)
 
         pil_img = Image.fromarray(out)
@@ -246,9 +255,10 @@ def create_viewer(file_paths, modality=""):
         image_label.config(image=tk_img, text="", compound=tk.NONE)
         image_label.image = tk_img
 
-    root.bind("<MouseWheel>", on_mouse_wheel)
-    root.bind("<Button-4>", lambda e: scroll_zoom(+1))
-    root.bind("<Button-5>", lambda e: scroll_zoom(-1))
+    # Bind events
+    root.bind("<MouseWheel>", on_mouse_wheel)         # Windows/macOS
+    root.bind("<Button-4>", lambda e: scroll_zoom(+1))  # older Linux
+    root.bind("<Button-5>", lambda e: scroll_zoom(-1))  # older Linux
 
     image_label.bind("<Button-1>", on_left_down)
     image_label.bind("<B1-Motion>", on_left_drag)
@@ -256,5 +266,4 @@ def create_viewer(file_paths, modality=""):
 
     file_slider.set(0)
     load_current_file()
-
     root.mainloop()
