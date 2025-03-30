@@ -20,6 +20,7 @@ def open_file_viewer(modality):
             ("DICOM Files", "*.dcm"),
             ("NIfTI Files (.nii/.nii.gz)", "*.nii *.nii.gz"),
             ("PNG/JPG Images", "*.png *.jpg *.jpeg"),
+            ("TIFF/WSI Images", "*.tif *.tiff *.svs *.ndpi *.scn *.mrxs"),
         ]
     )
     if not file_path:
@@ -31,13 +32,21 @@ def open_file_viewer(modality):
     recognized_paths = []
     for f in all_files:
         full_p = os.path.join(dir_path, f)
+        print(f"[DEBUG] Checking: {full_p}")
         if os.path.isfile(full_p):
             file_type, _ = image_loader.detect_file_type_and_metadata(full_p)
-            if file_type in ["DICOM", "NIfTI", "JPEG/PNG"]:
+            print(f"[DEBUG] Result => file_type={file_type}")
+            if file_type in ["DICOM", "NIfTI", "JPEG/PNG", "TIFF", "WHOLESLIDE"]:
+                print("[DEBUG] => recognized. Appending to recognized_paths.")
                 recognized_paths.append(full_p)
+            else:
+                print("[DEBUG] => Not recognized.")
+        else:
+            print("[DEBUG] => Not a file (maybe a subdir). Skipping.")
 
+    print(f"[DEBUG] recognized_paths => {recognized_paths}")
     if not recognized_paths:
-        print("No recognized image files in directory.")
+        print("[DEBUG] => recognized_paths is empty. No recognized image files in directory.")
         return
 
     # --- The key fix: move the chosen file_path to front of recognized_paths
