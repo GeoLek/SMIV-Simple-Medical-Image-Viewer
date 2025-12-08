@@ -3,85 +3,198 @@
 import numpy as np
 import cv2
 
-def apply_histogram_equalization(img_array):
-    img_array = img_array.astype(np.uint8)
-    return cv2.equalizeHist(img_array)
 
-def apply_colormap(img_array, colormap=cv2.COLORMAP_JET):
-    img_array = img_array.astype(np.uint8)
-    return cv2.applyColorMap(img_array, colormap)
+def apply_histogram_equalization(img_array: np.ndarray) -> np.ndarray:
+    """
+    Apply histogram equalization to a single-channel (grayscale) image.
+    If a 3-channel image is passed, it is first converted to grayscale.
+    """
+    if img_array.ndim == 3 and img_array.shape[2] == 3:
+        # Convert color to grayscale first
+        img_gray = cv2.cvtColor(img_array.astype(np.uint8), cv2.COLOR_BGR2GRAY)
+    else:
+        img_gray = img_array.astype(np.uint8)
 
-def adjust_brightness_contrast(img_array, brightness=0.0, contrast=1.0):
+    eq = cv2.equalizeHist(img_gray)
+    return eq.astype(np.float32)
+
+
+def apply_colormap(img_array: np.ndarray, colormap: int = cv2.COLORMAP_JET) -> np.ndarray:
+    """
+    Apply an OpenCV colormap to a single-channel image.
+    Output is 3-channel uint8 (H, W, 3).
+    """
+    img_u8 = np.clip(img_array, 0, 255).astype(np.uint8)
+    colored = cv2.applyColorMap(img_u8, colormap)
+    return colored.astype(np.float32)
+
+
+def adjust_brightness_contrast(
+    img_array: np.ndarray,
+    brightness: float = 0.0,
+    contrast: float = 1.0,
+) -> np.ndarray:
+    """
+    Simple linear brightness/contrast adjustment:
+      out = img * contrast + brightness
+
+    brightness ∈ [-100..100], contrast ∈ [1..5] recommended.
+    Works for 2D or 3D (color) arrays.
+    """
     float_img = img_array.astype(np.float32)
-    float_img = float_img * contrast + brightness
+    float_img = float_img * float(contrast) + float(brightness)
     return float_img
 
-def apply_zoom_and_pan(img_array, zoom_factor=1.0, pan_x=0.0, pan_y=0.0):
+
+def apply_zoom_and_pan(
+    img_array: np.ndarray,
+    zoom_factor: float = 1.0,
+    pan_x: float = 0.0,
+    pan_y: float = 0.0,
+) -> np.ndarray:
     """
-    Zoom in/out around the image center, then shift the subregion by pan_x/pan_y.
-    We'll interpret pan_x, pan_y as offsets in pixel coords.
+    Zooms into the image around a center shifted by (pan_x, pan_y),
+    then resizes back to the original resolution.
+    - zoom_factor > 1.0: zoom in
+    - zoom_factor < 1.0: zoom out (clamped to 0.5..10.0 in the viewer)
+    - pan_x, pan_y: shifts of the zoom center in pixel space.
+
+    img_array is expected to be either (H, W) or (H, W, C).
     """
-    if zoom_factor == 1.0 and (pan_x == 0.0 and pan_y == 0.0):
+
+    # If no zooming requested, return as-is
+    if zoom_factor is None or abs(zoom_factor - 1.0) < 1e-6:
         return img_array
 
-    h, w = img_array.shape[:2]
+    if zoom_factor <= 0:
+        zoom_factor = 1.0
 
-    crop_w = int(w / zoom_factor)
-    crop_h = int(h / zoom_factor)
+    # Handle both grayscale (H, W) and color (H, W, C)
+    if img_array.ndim == 2:
+        h, w = img_array.shape
+        channels = 1
+    elif img_array.ndim == 3:
+        h, w, channels = img_array.shape
+    else:
+        # Unsupported shape; just return original
+        return img_array
 
-    # The base center is (w/2, h/2). Shift by pan_x, pan_y.
-    center_x = w * 0.5 + pan_x
-    center_y = h * 0.5 + pan_y
+    # Compute crop size
+    crop_w = int(round(w / zoom_factor))
+    crop_h = int(round(h / zoom_factor))
 
-    x1 = center_x - crop_w * 0.5
-    y1 = center_y - crop_h * 0.5
+    # Ensure valid crop sizes
+    crop_w = max(1, min(w, crop_w))
+    crop_h = max(1, min(h, crop_h))
+
+    # Compute zoom center in original image coords
+    # Center starts from image center, then shifted by pan_x / pan_y
+    cx = int(round(w / 2 + pan_x))
+    cy = int(round(h / 2 + pan_y))
+
+    # Clamp center so crop stays within bounds as much as possible
+    half_w = crop_w // 2
+    half_h = crop_h // 2
+
+    x1 = cx - half_w
+    y1 = cy - half_h
     x2 = x1 + crop_w
     y2 = y1 + crop_h
 
-    # Cast to int
-    x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+    # Adjust if out of bounds
+    if x1 < 0:
+        x1 = 0
+        x2 = crop_w
+    if y1 < 0:
+        y1 = 0
+        y2 = crop_h
+    if x2 > w:
+        x2 = w
+        x1 = w - crop_w
+    if y2 > h:
+        y2 = h
+        y1 = h - crop_h
 
-    # Bound checks
-    if x1 < 0: x1 = 0
-    if y1 < 0: y1 = 0
-    if x2 > w: x2 = w
-    if y2 > h: y2 = h
+    # Final safety clamp
+    x1 = int(max(0, min(x1, w - 1)))
+    y1 = int(max(0, min(y1, h - 1)))
+    x2 = int(max(x1 + 1, min(x2, w)))
+    y2 = int(max(y1 + 1, min(y2, h)))
 
-    if x2 <= x1 or y2 <= y1:
-        return img_array
+    # Crop
+    if img_array.ndim == 2:
+        cropped = img_array[y1:y2, x1:x2]
+    else:
+        cropped = img_array[y1:y2, x1:x2, :]
 
-    cropped = img_array[y1:y2, x1:x2].astype(np.uint8)
-    resized = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
-    return resized.astype(np.float32)
+    # Resize back to original size
+    if channels == 1:
+        cropped_u8 = np.clip(cropped, 0, 255).astype(np.uint8)
+        resized = cv2.resize(cropped_u8, (w, h), interpolation=cv2.INTER_LINEAR)
+        return resized.astype(np.float32)
+    else:
+        # Color image
+        cropped_u8 = np.clip(cropped, 0, 255).astype(np.uint8)
+        resized = cv2.resize(cropped_u8, (w, h), interpolation=cv2.INTER_LINEAR)
+        return resized.astype(np.float32)
+
 
 def apply_all_processing(
-    img_array,
-    hist_eq=False,
-    brightness_contrast=False,
-    brightness=0.0,
-    contrast=1.0,
-    colormap=False,
-    zoom_enabled=False,
-    zoom_factor=1.0,
-    pan_x=0.0,
-    pan_y=0.0
-):
-    out = img_array.copy()
+    img_array: np.ndarray,
+    hist_eq: bool = False,
+    brightness_contrast: bool = False,
+    brightness: float = 0.0,
+    contrast: float = 1.0,
+    colormap: bool = False,
+    zoom_enabled: bool = False,
+    zoom_factor: float = 1.0,
+    pan_x: float = 0.0,
+    pan_y: float = 0.0,
+) -> np.ndarray:
+    """
+    Full processing pipeline:
+      1. Histogram Equalization (optional, on grayscale)
+      2. Brightness/Contrast (optional)
+      3. Colormap (optional, converts grayscale to color)
+      4. Zoom & Pan (optional)
+    Returns a float32 array; viewer will clip to [0, 255] and convert to uint8.
+    """
 
-    # 1) hist eq
+    # Make working copy as float32
+    out = img_array.astype(np.float32)
+
+    # 1) Histogram Equalization (only meaningful for single-channel)
     if hist_eq:
-        out = apply_histogram_equalization(out)
+        if out.ndim == 2:
+            out = apply_histogram_equalization(out)
+        elif out.ndim == 3 and out.shape[2] == 1:
+            out = apply_histogram_equalization(out[:, :, 0])
+        else:
+            # If already color, you might skip or convert to gray;
+            # here we skip to avoid weird effects.
+            pass
 
-    # 2) brightness/contrast
+    # 2) Brightness / Contrast
     if brightness_contrast:
-        out = adjust_brightness_contrast(out, brightness=brightness, contrast=contrast)
+        out = adjust_brightness_contrast(
+            out,
+            brightness=float(brightness),
+            contrast=float(contrast),
+        )
 
-    # 3) colormap
+    # 3) Colormap (only if image is single-channel)
     if colormap:
-        out = apply_colormap(out)
+        if out.ndim == 2 or (out.ndim == 3 and out.shape[2] == 1):
+            out = apply_colormap(out)
+        # If already color, we skip applying another colormap
 
-    # 4) zoom + pan
+    # 4) Zoom & Pan
     if zoom_enabled:
-        out = apply_zoom_and_pan(out, zoom_factor=zoom_factor, pan_x=pan_x, pan_y=pan_y)
+        out = apply_zoom_and_pan(
+            out,
+            zoom_factor=float(zoom_factor),
+            pan_x=float(pan_x),
+            pan_y=float(pan_y),
+        )
 
-    return out
+    return out.astype(np.float32)
