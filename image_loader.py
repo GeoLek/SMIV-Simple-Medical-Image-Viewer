@@ -2,7 +2,6 @@
 
 import os
 import warnings
-
 import pydicom
 import nibabel as nib
 import numpy as np
@@ -10,9 +9,9 @@ from PIL import Image, ImageFile
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pydicom")
 warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-Image.MAX_IMAGE_PIXELS = None
+Image.MAX_IMAGE_PIXELS = None  # allow very large images
 
-# Attempt to import OpenSlide
+# Try OpenSlide for WSI formats (.svs, .scn, .ndpi, etc.)
 try:
     import openslide
     OPENSLIDE_AVAILABLE = True
@@ -31,6 +30,7 @@ def detect_file_type_and_metadata(file_path):
       - WHOLESLIDE (.svs, .scn, etc. via OpenSlide)
       or unknown.
     """
+
     print("\nLoading... Please wait while we identify the file type.")
     print(f"[DEBUG] Checking file: {file_path}")
 
@@ -123,7 +123,7 @@ def detect_file_type_and_metadata(file_path):
     except Exception as e:
         print(f"[DEBUG] Pillow read failed: {e}")
 
-    # 5) Final fallback: try OpenSlide anyway
+    # 5) Final fallback: try OpenSlide again as generic WSI check
     if OPENSLIDE_AVAILABLE:
         print("[DEBUG] Checking with OpenSlide fallback for WSI.")
         try:
@@ -146,33 +146,28 @@ def detect_file_type_and_metadata(file_path):
     return None, "Error: Unknown or unsupported file format."
 
 
-def load_whole_slide(file_path):
+def load_whole_slide_downsampled(file_path, max_dim=2048):
     """
-    This version ALWAYS picks the highest level (smallest dimension)
-    AND attempts to respect bounding box (if available).
-    So we see the entire tissue at once, downsampled.
+    Use OpenSlide to load a downsampled overview image of a WSI.
+    We pick the lowest-resolution level whose max dimension <= max_dim.
+    If none fit, we take the lowest level (highest index).
+    Returns a 2D float32 array (grayscale).
     """
-    if not OPENSLIDE_AVAILABLE:
-        return None
-
     import openslide
     slide = openslide.OpenSlide(file_path)
-    level_count = slide.level_count
-    highest_level = level_count - 1  # the smallest dimension
 
-    # The dimension at that level
-    w_full, h_full = slide.level_dimensions[highest_level]
+    # Choose a level such that max(w, h) <= max_dim if possible
+    chosen_level = slide.level_count - 1  # start from lowest resolution
+    for lvl in range(slide.level_count - 1, -1, -1):
+        w, h = slide.level_dimensions[lvl]
+        if max(w, h) <= max_dim:
+            chosen_level = lvl
+            break
 
-    # If bounding props exist, use them
-    bounds_x = int(slide.properties.get('openslide.bounds-x', 0))
-    bounds_y = int(slide.properties.get('openslide.bounds-y', 0))
-    if 'openslide.bounds-width' in slide.properties:
-        w_full = int(slide.properties['openslide.bounds-width'])
-    if 'openslide.bounds-height' in slide.properties:
-        h_full = int(slide.properties['openslide.bounds-height'])
-
-    region = slide.read_region((bounds_x, bounds_y), highest_level, (w_full, h_full))
-    arr = region.convert("L")  # or "RGB" if you want color
+    w, h = slide.level_dimensions[chosen_level]
+    print(f"[DEBUG] load_whole_slide_downsampled: using level {chosen_level} with size {w}x{h}")
+    rgba = slide.read_region((0, 0), chosen_level, (w, h))
+    arr = rgba.convert("L")  # or "RGB" for color
     return np.array(arr, dtype=np.float32)
 
 
@@ -213,7 +208,7 @@ def load_tiff(file_path):
 
 def load_any_image(file_path, file_type):
     """
-    Single router function to unify calls in your code.
+    Single router function – if you want to unify calls in your code.
     """
     if file_type == "DICOM":
         return load_dicom(file_path)
@@ -224,7 +219,6 @@ def load_any_image(file_path, file_type):
     elif file_type == "TIFF":
         return load_tiff(file_path)
     elif file_type == "WHOLESLIDE":
-        # Use the bounding-based downsample approach
-        return load_whole_slide(file_path)
+        return load_whole_slide_downsampled(file_path, max_dim=2048)
     else:
         return None
