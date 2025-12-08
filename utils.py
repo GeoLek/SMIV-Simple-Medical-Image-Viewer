@@ -1,3 +1,5 @@
+# utils.py
+
 from PIL import Image
 
 def save_as_png(img_array, output_path):
