@@ -2,13 +2,13 @@
 
 import os
 import tkinter as tk
-from tkinter import ttk, BooleanVar, IntVar, Checkbutton, Scale
+from tkinter import ttk, BooleanVar, IntVar, Checkbutton, Scale, filedialog, messagebox
 import nibabel as nib
 import numpy as np
 from PIL import Image, ImageTk
-
 import image_loader
 import image_processing
+import utils
 
 
 def create_viewer(file_paths, modality=""):
@@ -23,6 +23,7 @@ def create_viewer(file_paths, modality=""):
 
     root = tk.Toplevel()
     root.title("Multi-File, Multi-Slice/Time, Preprocessing Viewer (Zoom + Pan + TIFF/WSI)")
+    root.geometry("1000x800")
 
     # --------------------------------------------------------
     # Viewer state
@@ -30,7 +31,7 @@ def create_viewer(file_paths, modality=""):
     state = {
         "file_paths": file_paths,
         "current_file_index": 0,
-        "volume": None,      # 4D => (H, W, Z, T)
+        "volume": None,  # 4D => (H, W, Z, T)
         "z_index": 0,
         "t_index": 0,
         "z_max": 1,
@@ -38,13 +39,15 @@ def create_viewer(file_paths, modality=""):
         "zoom_factor": 1.0,
         "zoom_enabled": False,
         # Pan / dragging state
-        "pan_x": 0.0,        # offset of zoom center from image center (pixels)
+        "pan_x": 0.0,
         "pan_y": 0.0,
         "dragging": False,
         "drag_start_x": 0,
         "drag_start_y": 0,
         "drag_start_pan_x": 0.0,
         "drag_start_pan_y": 0.0,
+        # Last displayed image (PIL.Image)
+        "last_pil_image": None,
     }
 
     # Preprocessing toggles/state
@@ -60,14 +63,43 @@ def create_viewer(file_paths, modality=""):
     # UI Layout
     # --------------------------------------------------------
     info_label = tk.Label(root, font=("Arial", 14))
-    info_label.pack(pady=5)
+    info_label.pack(side=tk.TOP, pady=5)
 
-    image_label = tk.Label(root)
-    image_label.pack()
+    # Frame that will hold the image and expand with the window
+    image_frame = tk.Frame(root, bg="black")
+    image_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    image_label = tk.Label(image_frame, bg="black")
+    image_label.pack(expand=True)
 
     # --- File navigation (Prev / Next + file slider)
     nav_frame = tk.Frame(root)
     nav_frame.pack(pady=10)
+
+    def export_current_view():
+        """
+        Export the currently displayed view (after preprocessing, zoom, pan, and resizing)
+        as a PNG image. The user is prompted for the output filename.
+        """
+        pil_img = state.get("last_pil_image", None)
+        if pil_img is None:
+            messagebox.showwarning("Export Current View", "No image is currently displayed to export.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            title="Save current view as PNG",
+            defaultextension=".png",
+            filetypes=[("PNG Image", "*.png")]
+        )
+        if not file_path:
+            # User cancelled
+            return
+
+        try:
+            pil_img.save(file_path, format="PNG")
+            messagebox.showinfo("Export Current View", f"Image successfully saved to:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Export Current View", f"Failed to save image:\n{e}")
 
     def change_file(delta):
         new_idx = (state["current_file_index"] + delta) % len(file_paths)
@@ -155,6 +187,14 @@ def create_viewer(file_paths, modality=""):
         orient=tk.HORIZONTAL,
         command=lambda x: display_current_slice()
     ).pack(fill=tk.X)
+
+    # Export button
+    export_button = tk.Button(
+        preproc_frame,
+        text="Export Current View as PNG",
+        command=export_current_view
+    )
+    export_button.pack(anchor="w", pady=(5, 0))
 
     zoom_var = BooleanVar(value=False)
 
@@ -324,8 +364,35 @@ def create_viewer(file_paths, modality=""):
 
         display_current_slice()
 
+        # Throttle resize-triggered redraws to avoid flicker & callback storms
+        resize_pending = {"flag": False}
+
+        def on_root_resize(event):
+            # Only handle resize events from the main window
+            if event.widget is not root:
+                return
+
+            # If a redraw is already scheduled, don't schedule another
+            if resize_pending["flag"]:
+                return
+
+            resize_pending["flag"] = True
+
+            def do_redraw():
+                resize_pending["flag"] = False
+                # Safe redraw
+                try:
+                    display_current_slice()
+                except Exception as e:
+                    print("[ERROR] Exception during display_current_slice on resize:", e)
+
+            # Schedule the redraw a bit later (e.g. 60 ms)
+            root.after(60, do_redraw)
+
+        root.bind("<Configure>", on_root_resize)
+
     def display_current_slice():
-        """Grab current slice (H, W) from volume, preprocess, then show in Tk."""
+        """Grab current slice (H, W) from volume, preprocess, then show in Tk, scaled to fit window."""
         vol = state["volume"]
         if vol is None:
             image_label.config(image="", text="Cannot display file", compound=tk.CENTER)
@@ -356,12 +423,51 @@ def create_viewer(file_paths, modality=""):
 
         out = np.clip(out, 0, 255).astype(np.uint8)
 
-        # If colormap was applied, out may be (H, W, 3); otherwise (H, W)
+        # Determine the target display size based on the image_frame size
+        frame_width = image_frame.winfo_width()
+        frame_height = image_frame.winfo_height()
+
+        # Original image size
+        h, w = out.shape[:2]
+
+        # If the frame doesn't have a meaningful size yet (first draw),
+        # just display the image at its native resolution (no scaling).
+        if frame_width <= 1 or frame_height <= 1:
+            new_w, new_h = w, h
+        else:
+            # Use almost all space in the frame (small margin)
+            max_display_width = max(100, frame_width - 10)
+            max_display_height = max(100, frame_height - 10)
+
+            # Compute uniform scale factor to fit within (max_display_width, max_display_height)
+            scale_w = max_display_width / float(w)
+            scale_h = max_display_height / float(h)
+            scale = min(scale_w, scale_h)
+
+            if scale <= 0:
+                scale = 1.0
+
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            if new_w < 1:
+                new_w = 1
+            if new_h < 1:
+                new_h = 1
+
+        # Convert to PIL image
         if out.ndim == 2:
             pil_img = Image.fromarray(out, mode="L")
         else:
             pil_img = Image.fromarray(out[..., ::-1], mode="RGB")  # BGR->RGB
 
+        # Resize to fit image_frame while preserving aspect ratio
+        if (new_w, new_h) != (w, h):
+            pil_img = pil_img.resize((new_w, new_h), resample=Image.BILINEAR)
+
+        # Store the final displayed image for export
+        state["last_pil_image"] = pil_img
+
+        # Show in Tkinter
         tk_img = ImageTk.PhotoImage(pil_img)
         image_label.config(image=tk_img, text="", compound=tk.NONE)
         image_label.image = tk_img
