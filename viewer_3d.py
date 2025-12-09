@@ -154,5 +154,6 @@ class MedicalImageViewer3D:
 def create_3d_viewer(file_path):
     """ Launches the Medical Image Viewer """
     root = tk.Toplevel()
+    root.geometry("1000x800")
     MedicalImageViewer3D(root, file_path)
     root.mainloop()
