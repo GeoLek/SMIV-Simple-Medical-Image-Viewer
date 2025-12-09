@@ -25,6 +25,7 @@ def create_2d_viewer(file_path, modality):
     # 2) Create main viewer window
     viewer_window = tk.Toplevel()
     viewer_window.title(f"2D Viewer - {modality}")
+    viewer_window.geometry("1000x800")
 
     # 2b) Create separate metadata window
     meta_window = tk.Toplevel(viewer_window)
