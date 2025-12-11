@@ -76,12 +76,102 @@ def create_viewer(file_paths, modality=""):
     nav_frame = tk.Frame(root)
     nav_frame.pack(pady=10)
 
+    def build_display_image():
+        """
+        Build the final PIL.Image to be shown/exported, using:
+          - current volume
+          - current z/t indices
+          - preprocessing settings
+          - zoom & pan
+          - image_frame size for fit-to-window
+
+        Returns:
+          pil_img (PIL.Image) or None if no volume.
+        """
+        vol = state["volume"]
+        if vol is None:
+            return None
+
+        # Extract 2D slice: (H, W, Z, T) -> (H, W)
+        slice_2d = vol[..., state["z_index"], state["t_index"]]
+
+        # Normalize to [0, 255] before processing
+        slice_2d = slice_2d.astype(np.float32)
+        min_val, max_val = slice_2d.min(), slice_2d.max()
+        if max_val != min_val:
+            slice_2d = (slice_2d - min_val) / (max_val - min_val) * 255.0
+
+        # Apply preprocessing, zoom, and pan
+        out = image_processing.apply_all_processing(
+            slice_2d,
+            hist_eq=settings["hist_eq"].get(),
+            brightness_contrast=settings["brightness_contrast"].get(),
+            brightness=settings["brightness"].get(),
+            contrast=settings["contrast"].get(),
+            colormap=settings["colormap"].get(),
+            zoom_enabled=state["zoom_enabled"],
+            zoom_factor=state["zoom_factor"],
+            pan_x=state["pan_x"],
+            pan_y=state["pan_y"],
+        )
+
+        out = np.clip(out, 0, 255).astype(np.uint8)
+
+        # Determine the target display size based on the image_frame size
+        frame_width = image_frame.winfo_width()
+        frame_height = image_frame.winfo_height()
+
+        # Original image size
+        h, w = out.shape[:2]
+
+        # If the frame doesn't have a meaningful size yet (first draw),
+        # just use the original size (no scaling).
+        if frame_width <= 1 or frame_height <= 1:
+            new_w, new_h = w, h
+        else:
+            # Use almost all space in the frame (small margin)
+            max_display_width = max(100, frame_width - 10)
+            max_display_height = max(100, frame_height - 10)
+
+            # Compute uniform scale factor to fit within (max_display_width, max_display_height)
+            scale_w = max_display_width / float(w)
+            scale_h = max_display_height / float(h)
+            scale = min(scale_w, scale_h)
+
+            if scale <= 0:
+                scale = 1.0
+
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            if new_w < 1:
+                new_w = 1
+            if new_h < 1:
+                new_h = 1
+
+        # Convert to PIL image
+        if out.ndim == 2:
+            pil_img = Image.fromarray(out, mode="L")
+        else:
+            pil_img = Image.fromarray(out[..., ::-1], mode="RGB")  # BGR->RGB
+
+        # Resize to fit image_frame while preserving aspect ratio
+        if (new_w, new_h) != (w, h):
+            pil_img = pil_img.resize((new_w, new_h), resample=Image.BILINEAR)
+
+        return pil_img
+
     def export_current_view():
         """
         Export the currently displayed view (after preprocessing, zoom, pan, and resizing)
         as a PNG image. The user is prompted for the output filename.
         """
         pil_img = state.get("last_pil_image", None)
+
+        # If for some reason we don't have a stored image, rebuild once.
+        if pil_img is None:
+            pil_img = build_display_image()
+            state["last_pil_image"] = pil_img
+
         if pil_img is None:
             messagebox.showwarning("Export Current View", "No image is currently displayed to export.")
             return
@@ -392,77 +482,12 @@ def create_viewer(file_paths, modality=""):
         root.bind("<Configure>", on_root_resize)
 
     def display_current_slice():
-        """Grab current slice (H, W) from volume, preprocess, then show in Tk, scaled to fit window."""
-        vol = state["volume"]
-        if vol is None:
+        """Grab current slice from volume, build display image, then show in Tk."""
+        pil_img = build_display_image()
+        if pil_img is None:
             image_label.config(image="", text="Cannot display file", compound=tk.CENTER)
+            state["last_pil_image"] = None
             return
-
-        # Extract 2D slice: (H, W, Z, T) -> (H, W)
-        slice_2d = vol[..., state["z_index"], state["t_index"]]
-
-        # Normalize to [0, 255] before processing
-        slice_2d = slice_2d.astype(np.float32)
-        min_val, max_val = slice_2d.min(), slice_2d.max()
-        if max_val != min_val:
-            slice_2d = (slice_2d - min_val) / (max_val - min_val) * 255.0
-
-        # Apply preprocessing, zoom, and pan
-        out = image_processing.apply_all_processing(
-            slice_2d,
-            hist_eq=settings["hist_eq"].get(),
-            brightness_contrast=settings["brightness_contrast"].get(),
-            brightness=settings["brightness"].get(),
-            contrast=settings["contrast"].get(),
-            colormap=settings["colormap"].get(),
-            zoom_enabled=state["zoom_enabled"],
-            zoom_factor=state["zoom_factor"],
-            pan_x=state["pan_x"],
-            pan_y=state["pan_y"],
-        )
-
-        out = np.clip(out, 0, 255).astype(np.uint8)
-
-        # Determine the target display size based on the image_frame size
-        frame_width = image_frame.winfo_width()
-        frame_height = image_frame.winfo_height()
-
-        # Original image size
-        h, w = out.shape[:2]
-
-        # If the frame doesn't have a meaningful size yet (first draw),
-        # just display the image at its native resolution (no scaling).
-        if frame_width <= 1 or frame_height <= 1:
-            new_w, new_h = w, h
-        else:
-            # Use almost all space in the frame (small margin)
-            max_display_width = max(100, frame_width - 10)
-            max_display_height = max(100, frame_height - 10)
-
-            # Compute uniform scale factor to fit within (max_display_width, max_display_height)
-            scale_w = max_display_width / float(w)
-            scale_h = max_display_height / float(h)
-            scale = min(scale_w, scale_h)
-
-            if scale <= 0:
-                scale = 1.0
-
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            if new_w < 1:
-                new_w = 1
-            if new_h < 1:
-                new_h = 1
-
-        # Convert to PIL image
-        if out.ndim == 2:
-            pil_img = Image.fromarray(out, mode="L")
-        else:
-            pil_img = Image.fromarray(out[..., ::-1], mode="RGB")  # BGR->RGB
-
-        # Resize to fit image_frame while preserving aspect ratio
-        if (new_w, new_h) != (w, h):
-            pil_img = pil_img.resize((new_w, new_h), resample=Image.BILINEAR)
 
         # Store the final displayed image for export
         state["last_pil_image"] = pil_img
