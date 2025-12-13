@@ -194,15 +194,32 @@ def load_nifti(file_path):
 
 
 def load_jpeg_png(file_path):
-    """Load PNG/JPEG => grayscale float32 [0..255]."""
-    with Image.open(file_path).convert("L") as img:
-        return np.array(img, dtype=np.float32)
+    """
+    Load PNG/JPEG preserving color if present.
+    Returns:
+      - (H, W) float32 for grayscale
+      - (H, W, 3) float32 for RGB
+    """
+    with Image.open(file_path) as img:
+        # Normalize modes; keep RGB if it’s color
+        if img.mode in ("RGB", "RGBA", "P"):
+            img = img.convert("RGB")
+            return np.array(img, dtype=np.float32)
+        else:
+            img = img.convert("L")
+            return np.array(img, dtype=np.float32)
 
 
 def load_tiff(file_path):
-    """Minimal load for TIFF. Only the first page in grayscale."""
+    """
+    Minimal load for TIFF. Only the first page.
+    Preserve RGB if present.
+    """
     with Image.open(file_path) as img:
-        arr = img.convert("L")
+        if img.mode in ("RGB", "RGBA", "P"):
+            arr = img.convert("RGB")
+        else:
+            arr = img.convert("L")
     return np.array(arr, dtype=np.float32)
 
 
