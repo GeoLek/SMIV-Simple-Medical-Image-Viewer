@@ -8,8 +8,7 @@ import numpy as np
 from PIL import Image, ImageTk
 import image_loader
 import image_processing
-import utils
-
+import overlay_utils
 
 def create_viewer(file_paths, modality=""):
     """
@@ -47,6 +46,10 @@ def create_viewer(file_paths, modality=""):
         "drag_start_y": 0,
         "drag_start_pan_x": 0.0,
         "drag_start_pan_y": 0.0,
+        "mask_path": None,
+        "mask_volume": None,
+        "overlay_enabled": False,
+        "overlay_alpha": 35,  # 0..100
     }
 
     # Preprocessing toggles/state
@@ -195,6 +198,63 @@ def create_viewer(file_paths, modality=""):
     )
     export_button.pack(anchor="w", pady=(5, 0))
 
+    overlay_var = BooleanVar(value=False)
+    alpha_var = IntVar(value=35)
+
+    def toggle_overlay():
+        state["overlay_enabled"] = overlay_var.get()
+        display_current_slice()
+
+    def on_alpha_change(val):
+        state["overlay_alpha"] = int(float(val))
+        display_current_slice()
+
+    def load_mask_dialog():
+        mask_path = filedialog.askopenfilename(
+            title="Select segmentation mask",
+            initialdir=".",
+            filetypes=[
+                ("Mask files", "*.nii *.nii.gz *.png *.jpg *.jpeg *.tif *.tiff *.npy"),
+                ("All files", "*"),
+            ],
+        )
+        if not mask_path:
+            return
+
+        try:
+            m = overlay_utils.load_mask(mask_path)
+        except Exception as e:
+            messagebox.showerror("Load Mask", f"Failed to load mask:\n{e}")
+            return
+
+        state["mask_path"] = mask_path
+        state["mask_volume"] = m
+        state["overlay_enabled"] = True
+        overlay_var.set(True)
+
+        messagebox.showinfo("Load Mask", f"Mask loaded:\n{os.path.basename(mask_path)}")
+        display_current_slice()
+
+    mask_btn = tk.Button(preproc_frame, text="Load Mask", command=load_mask_dialog)
+    mask_btn.pack(anchor="w", pady=(8, 0))
+
+    Checkbutton(
+        preproc_frame,
+        text="Show Segmentation Overlay",
+        variable=overlay_var,
+        command=toggle_overlay
+    ).pack(anchor="w")
+
+    Scale(
+        preproc_frame,
+        from_=0,
+        to=100,
+        label="Overlay Alpha (%)",
+        variable=alpha_var,
+        orient=tk.HORIZONTAL,
+        command=on_alpha_change
+    ).pack(fill=tk.X)
+
     zoom_var = BooleanVar(value=False)
 
     def toggle_zoom():
@@ -337,6 +397,33 @@ def create_viewer(file_paths, modality=""):
 
         if (new_w, new_h) != (w, h):
             pil_img = pil_img.resize((new_w, new_h), resample=Image.BILINEAR)
+
+            # --------------------------------------------------------
+            # Apply segmentation overlay (if enabled and mask loaded)
+            # --------------------------------------------------------
+        if state.get("overlay_enabled") and state.get("mask_volume") is not None:
+            try:
+                m2d = overlay_utils.get_mask_slice(
+                    state["mask_volume"],
+                    z_index=state.get("z_index", 0),
+                    t_index=state.get("t_index", 0),
+                )
+                m2d = overlay_utils.to_binary_mask(m2d, threshold=0.0)
+
+                # Resize mask to match the final displayed image size
+                target_w, target_h = pil_img.size
+                m2d = overlay_utils.resize_mask_nearest(m2d, target_w, target_h)
+
+                alpha = float(state.get("overlay_alpha", 35)) / 100.0
+                pil_img = overlay_utils.apply_overlay_to_pil(
+                    pil_img,
+                    m2d,
+                    alpha=alpha,
+                    color_rgb=(255, 0, 0),
+                )
+            except Exception as e:
+                # Do not crash viewer if mask doesn't match; just show base image
+                print("[WARN] Overlay failed:", e)
 
         return pil_img
 
