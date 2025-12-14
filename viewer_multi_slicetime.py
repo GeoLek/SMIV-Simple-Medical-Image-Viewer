@@ -398,9 +398,7 @@ def create_viewer(file_paths, modality=""):
         if (new_w, new_h) != (w, h):
             pil_img = pil_img.resize((new_w, new_h), resample=Image.BILINEAR)
 
-            # --------------------------------------------------------
-            # Apply segmentation overlay (if enabled and mask loaded)
-            # --------------------------------------------------------
+        # Apply segmentation overlay (if enabled and mask loaded)
         if state.get("overlay_enabled") and state.get("mask_volume") is not None:
             try:
                 m2d = overlay_utils.get_mask_slice(
@@ -409,6 +407,19 @@ def create_viewer(file_paths, modality=""):
                     t_index=state.get("t_index", 0),
                 )
                 m2d = overlay_utils.to_binary_mask(m2d, threshold=0.0)
+
+                # image slice size BEFORE window resizing
+                img_h, img_w = slice_2d.shape[:2]  # this is the pre-zoom slice size
+
+                if m2d.shape != (img_h, img_w):
+                    m2d = overlay_utils.resize_mask_nearest(m2d, img_w, img_h)
+
+                m2d = image_processing.apply_zoom_and_pan_mask(
+                    m2d,
+                    zoom_factor=state["zoom_factor"],
+                    pan_x=state["pan_x"],
+                    pan_y=state["pan_y"],
+                )
 
                 # Resize mask to match the final displayed image size
                 target_w, target_h = pil_img.size
