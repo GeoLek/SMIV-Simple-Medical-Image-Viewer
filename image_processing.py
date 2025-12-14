@@ -198,3 +198,71 @@ def apply_all_processing(
         )
 
     return out.astype(np.float32)
+
+def apply_zoom_and_pan_mask(
+    mask_array: np.ndarray,
+    zoom_factor: float = 1.0,
+    pan_x: float = 0.0,
+    pan_y: float = 0.0,
+) -> np.ndarray:
+    """
+    Same geometry as apply_zoom_and_pan, but uses nearest-neighbor to preserve labels.
+    mask_array must be 2D (H, W).
+    Returns float32 or uint8 mask resized back to original (H, W).
+    """
+    if mask_array is None:
+        return None
+
+    if zoom_factor is None or abs(zoom_factor - 1.0) < 1e-6:
+        return mask_array
+
+    if zoom_factor <= 0:
+        zoom_factor = 1.0
+
+    m = mask_array
+    if m.ndim != 2:
+        m = np.squeeze(m)
+        if m.ndim != 2:
+            return mask_array
+
+    h, w = m.shape
+
+    crop_w = int(round(w / zoom_factor))
+    crop_h = int(round(h / zoom_factor))
+    crop_w = max(1, min(w, crop_w))
+    crop_h = max(1, min(h, crop_h))
+
+    cx = int(round(w / 2 + pan_x))
+    cy = int(round(h / 2 + pan_y))
+
+    half_w = crop_w // 2
+    half_h = crop_h // 2
+
+    x1 = cx - half_w
+    y1 = cy - half_h
+    x2 = x1 + crop_w
+    y2 = y1 + crop_h
+
+    if x1 < 0:
+        x1 = 0
+        x2 = crop_w
+    if y1 < 0:
+        y1 = 0
+        y2 = crop_h
+    if x2 > w:
+        x2 = w
+        x1 = w - crop_w
+    if y2 > h:
+        y2 = h
+        y1 = h - crop_h
+
+    x1 = int(max(0, min(x1, w - 1)))
+    y1 = int(max(0, min(y1, h - 1)))
+    x2 = int(max(x1 + 1, min(x2, w)))
+    y2 = int(max(y1 + 1, min(y2, h)))
+
+    cropped = m[y1:y2, x1:x2].astype(np.uint8)
+
+    # Nearest-neighbor is critical for masks
+    resized = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_NEAREST)
+    return resized
