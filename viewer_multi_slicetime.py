@@ -31,7 +31,8 @@ def create_viewer(file_paths, modality=""):
     state = {
         "file_paths": file_paths,
         "current_file_index": 0,
-        "volume": None,  # 4D => (H, W, Z, T)
+        "current_file_type": None,
+        "volume": None,  # either (H,W,3) RGB for PNG/TIFF, OR 4D (H,W,Z,T) for medical data
         "z_index": 0,
         "t_index": 0,
         "z_max": 1,
@@ -46,8 +47,6 @@ def create_viewer(file_paths, modality=""):
         "drag_start_y": 0,
         "drag_start_pan_x": 0.0,
         "drag_start_pan_y": 0.0,
-        # Last displayed image (PIL.Image)
-        "last_pil_image": None,
     }
 
     # Preprocessing toggles/state
@@ -76,105 +75,17 @@ def create_viewer(file_paths, modality=""):
     nav_frame = tk.Frame(root)
     nav_frame.pack(pady=10)
 
-    def build_display_image():
-        """
-        Build the final PIL.Image to be shown/exported, using:
-          - current volume
-          - current z/t indices
-          - preprocessing settings
-          - zoom & pan
-          - image_frame size for fit-to-window
-
-        Returns:
-          pil_img (PIL.Image) or None if no volume.
-        """
-        vol = state["volume"]
-        if vol is None:
-            return None
-
-        # Extract 2D slice: (H, W, Z, T) -> (H, W)
-        slice_2d = vol[..., state["z_index"], state["t_index"]]
-
-        # Normalize to [0, 255] before processing
-        slice_2d = slice_2d.astype(np.float32)
-        min_val, max_val = slice_2d.min(), slice_2d.max()
-        if max_val != min_val:
-            slice_2d = (slice_2d - min_val) / (max_val - min_val) * 255.0
-
-        # Apply preprocessing, zoom, and pan
-        out = image_processing.apply_all_processing(
-            slice_2d,
-            hist_eq=settings["hist_eq"].get(),
-            brightness_contrast=settings["brightness_contrast"].get(),
-            brightness=settings["brightness"].get(),
-            contrast=settings["contrast"].get(),
-            colormap=settings["colormap"].get(),
-            zoom_enabled=state["zoom_enabled"],
-            zoom_factor=state["zoom_factor"],
-            pan_x=state["pan_x"],
-            pan_y=state["pan_y"],
-        )
-
-        out = np.clip(out, 0, 255).astype(np.uint8)
-
-        # Determine the target display size based on the image_frame size
-        frame_width = image_frame.winfo_width()
-        frame_height = image_frame.winfo_height()
-
-        # Original image size
-        h, w = out.shape[:2]
-
-        # If the frame doesn't have a meaningful size yet (first draw),
-        # just use the original size (no scaling).
-        if frame_width <= 1 or frame_height <= 1:
-            new_w, new_h = w, h
-        else:
-            # Use almost all space in the frame (small margin)
-            max_display_width = max(100, frame_width - 10)
-            max_display_height = max(100, frame_height - 10)
-
-            # Compute uniform scale factor to fit within (max_display_width, max_display_height)
-            scale_w = max_display_width / float(w)
-            scale_h = max_display_height / float(h)
-            scale = min(scale_w, scale_h)
-
-            if scale <= 0:
-                scale = 1.0
-
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            if new_w < 1:
-                new_w = 1
-            if new_h < 1:
-                new_h = 1
-
-        # Convert to PIL image
-        if out.ndim == 2:
-            pil_img = Image.fromarray(out, mode="L")
-        else:
-            pil_img = Image.fromarray(out[..., ::-1], mode="RGB")  # BGR->RGB
-
-        # Resize to fit image_frame while preserving aspect ratio
-        if (new_w, new_h) != (w, h):
-            pil_img = pil_img.resize((new_w, new_h), resample=Image.BILINEAR)
-
-        return pil_img
-
     def export_current_view():
         """
-        Export the currently displayed view (after preprocessing, zoom, pan, and resizing)
-        as a PNG image. The user is prompted for the output filename.
+        Export exactly what is currently shown in the viewer as a PNG.
+        We read the image back from image_label.image (the PhotoImage).
         """
-        pil_img = state.get("last_pil_image", None)
-
-        # If for some reason we don't have a stored image, rebuild once.
-        if pil_img is None:
-            pil_img = build_display_image()
-            state["last_pil_image"] = pil_img
-
-        if pil_img is None:
+        tk_img = getattr(image_label, "image", None)
+        if tk_img is None:
             messagebox.showwarning("Export Current View", "No image is currently displayed to export.")
             return
+
+        pil_img = ImageTk.getimage(tk_img)
 
         file_path = filedialog.asksaveasfilename(
             title="Save current view as PNG",
@@ -182,7 +93,6 @@ def create_viewer(file_paths, modality=""):
             filetypes=[("PNG Image", "*.png")]
         )
         if not file_path:
-            # User cancelled
             return
 
         try:
@@ -278,7 +188,6 @@ def create_viewer(file_paths, modality=""):
         command=lambda x: display_current_slice()
     ).pack(fill=tk.X)
 
-    # Export button
     export_button = tk.Button(
         preproc_frame,
         text="Export Current View as PNG",
@@ -290,7 +199,6 @@ def create_viewer(file_paths, modality=""):
 
     def toggle_zoom():
         state["zoom_enabled"] = zoom_var.get()
-        # Reset pan when toggling zoom to avoid weird offsets
         state["pan_x"] = 0.0
         state["pan_y"] = 0.0
         state["zoom_factor"] = 1.0
@@ -313,12 +221,10 @@ def create_viewer(file_paths, modality=""):
     # Zoom / Pan Event Handlers
     # --------------------------------------------------------
     def on_mouse_wheel(event):
-        """Zoom in/out with the mouse wheel."""
         if not state["zoom_enabled"]:
             return
         step = 1.1
-        direction = +1 if event.delta > 0 else -1
-        if direction > 0:
+        if event.delta > 0:
             state["zoom_factor"] *= step
         else:
             state["zoom_factor"] /= step
@@ -326,7 +232,6 @@ def create_viewer(file_paths, modality=""):
         display_current_slice()
 
     def scroll_zoom(direction):
-        """Support old Linux Button-4/5 events for zoom."""
         if not state["zoom_enabled"]:
             return
         step = 1.1
@@ -338,7 +243,6 @@ def create_viewer(file_paths, modality=""):
         display_current_slice()
 
     def on_left_down(event):
-        """Start panning if zoom is enabled."""
         if not state["zoom_enabled"]:
             return
         state["dragging"] = True
@@ -348,169 +252,228 @@ def create_viewer(file_paths, modality=""):
         state["drag_start_pan_y"] = state["pan_y"]
 
     def on_left_up(event):
-        """Stop panning."""
         state["dragging"] = False
 
     def on_left_drag(event):
-        """
-        While dragging with left button:
-        - Move pan_x / pan_y so that dragging feels like grabbing the image.
-        - Dragging right => move view to the right (revealing right side),
-          so the zoom center must shift to the LEFT (negative direction).
-        """
         if not state["dragging"] or not state["zoom_enabled"]:
             return
 
         dx = event.x - state["drag_start_x"]
         dy = event.y - state["drag_start_y"]
 
-        # Scale pan movement by zoom_factor so it doesn't feel too jumpy when zoomed in
         zf = state["zoom_factor"] if state["zoom_factor"] != 0 else 1.0
-
-        # We invert the sign so that dragging right shows the right side (map-like behavior)
         state["pan_x"] = state["drag_start_pan_x"] - dx / zf
         state["pan_y"] = state["drag_start_pan_y"] - dy / zf
 
         display_current_slice()
 
     # --------------------------------------------------------
-    # Loading / Display logic
+    # Display helpers
+    # --------------------------------------------------------
+    def build_display_image():
+        vol = state["volume"]
+        if vol is None:
+            return None
+
+        file_type = state.get("current_file_type")
+        is_rgb_2d = (
+            file_type in ["JPEG/PNG", "TIFF"]
+            and vol.ndim == 3
+            and vol.shape[2] == 3
+        )
+
+        # Extract slice
+        if is_rgb_2d:
+            slice_2d = vol.astype(np.float32)
+        else:
+            slice_2d = vol[..., state["z_index"], state["t_index"]].astype(np.float32)
+            # Normalize medical slice to [0..255]
+            min_val, max_val = slice_2d.min(), slice_2d.max()
+            if max_val != min_val:
+                slice_2d = (slice_2d - min_val) / (max_val - min_val) * 255.0
+
+        # Apply preprocessing
+        out = image_processing.apply_all_processing(
+            slice_2d,
+            hist_eq=settings["hist_eq"].get(),
+            brightness_contrast=settings["brightness_contrast"].get(),
+            brightness=settings["brightness"].get(),
+            contrast=settings["contrast"].get(),
+            colormap=settings["colormap"].get(),
+            zoom_enabled=state["zoom_enabled"],
+            zoom_factor=state["zoom_factor"],
+            pan_x=state["pan_x"],
+            pan_y=state["pan_y"],
+        )
+
+        out = np.clip(out, 0, 255).astype(np.uint8)
+
+        # Fit to window
+        frame_width = image_frame.winfo_width()
+        frame_height = image_frame.winfo_height()
+
+        h, w = out.shape[:2]
+        if frame_width <= 1 or frame_height <= 1:
+            new_w, new_h = w, h
+        else:
+            max_display_width = max(100, frame_width - 10)
+            max_display_height = max(100, frame_height - 10)
+            scale = min(max_display_width / float(w), max_display_height / float(h))
+            if scale <= 0:
+                scale = 1.0
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+
+        # Convert to PIL
+        if out.ndim == 2:
+            pil_img = Image.fromarray(out, mode="L")
+        else:
+            # If colormap was applied to a grayscale image, OpenCV output is BGR
+            colormap_applied = settings["colormap"].get() and (not is_rgb_2d)
+            if colormap_applied:
+                pil_img = Image.fromarray(out[..., ::-1], mode="RGB")  # BGR->RGB
+            else:
+                pil_img = Image.fromarray(out, mode="RGB")  # already RGB
+
+        if (new_w, new_h) != (w, h):
+            pil_img = pil_img.resize((new_w, new_h), resample=Image.BILINEAR)
+
+        return pil_img
+
+    def display_current_slice():
+        pil_img = build_display_image()
+        if pil_img is None:
+            image_label.config(image="", text="Cannot display file", compound=tk.CENTER)
+            return
+
+        tk_img = ImageTk.PhotoImage(pil_img)
+        image_label.config(image=tk_img, text="", compound=tk.NONE)
+        image_label.image = tk_img
+
+    # --------------------------------------------------------
+    # Loading
     # --------------------------------------------------------
     def load_current_file():
-        """Load current file into state['volume'] as a 4D array (H, W, Z, T)."""
         idx = state["current_file_index"]
         path = file_paths[idx]
         file_type, meta_str = image_loader.detect_file_type_and_metadata(path)
+        state["current_file_type"] = file_type
 
-        info_label.config(
-            text=f"[{idx+1}/{len(file_paths)}] {os.path.basename(path)} - {file_type or 'Unknown'}"
-        )
+        info_label.config(text=f"[{idx+1}/{len(file_paths)}] {os.path.basename(path)} - {file_type or 'Unknown'}")
         metadata_label.config(text=meta_str)
 
         arr = None
-
         if file_type == "DICOM":
             arr = image_loader.load_dicom(path)
-
         elif file_type == "NIfTI":
-            vol = nib.load(path).get_fdata()
-            arr = vol
-
+            arr = nib.load(path).get_fdata()
         elif file_type == "JPEG/PNG":
             arr = image_loader.load_jpeg_png(path)
-
         elif file_type == "TIFF":
             arr = image_loader.load_tiff(path)
-
         elif file_type == "WHOLESLIDE":
-            # Full-slide, downsampled to a manageable level,
-            # but still a full-view image that we can preprocess.
             arr = image_loader.load_whole_slide_downsampled(path)
 
-        # Convert arr to 4D (H, W, Z, T)
-        if arr is not None:
-            if arr.ndim == 2:
-                # 2D => (H, W, 1, 1)
-                arr = arr[..., np.newaxis, np.newaxis]
-            elif arr.ndim == 3:
-                # 3D => (H, W, Z, 1)
-                arr = arr[..., np.newaxis]
-            state["volume"] = arr
-        else:
+        # Store volume properly
+        if arr is None:
             state["volume"] = None
-
-        if state["volume"] is not None:
-            shape_4d = state["volume"].shape  # (H, W, Z, T)
-            state["z_max"] = shape_4d[2]
-            state["t_max"] = shape_4d[3]
-            state["z_index"] = min(state["z_max"] // 2, state["z_max"] - 1)
-            state["t_index"] = min(state["t_max"] // 2, state["t_max"] - 1)
-
-            # Configure Z slider
-            if state["z_max"] > 1:
-                z_slider.config(to=state["z_max"] - 1)
-                z_slider.set(state["z_index"])
-                z_slider.pack(fill=tk.X, padx=10, pady=5)
-            else:
-                z_slider.pack_forget()
-
-            # Configure T slider
-            if state["t_max"] > 1:
-                t_slider.config(to=state["t_max"] - 1)
-                t_slider.set(state["t_index"])
-                t_slider.pack(fill=tk.X, padx=10, pady=5)
-            else:
-                t_slider.pack_forget()
         else:
+            is_rgb_2d = (
+                file_type in ["JPEG/PNG", "TIFF"]
+                and arr.ndim == 3
+                and arr.shape[2] == 3
+            )
+
+            if is_rgb_2d:
+                state["volume"] = arr  # (H, W, 3)
+            else:
+                # force to 4D (H,W,Z,T)
+                if arr.ndim == 2:
+                    arr = arr[..., np.newaxis, np.newaxis]
+                elif arr.ndim == 3:
+                    arr = arr[..., np.newaxis]
+                state["volume"] = arr
+
+        # Configure sliders
+        if state["volume"] is None:
             state["z_max"] = 1
             state["t_max"] = 1
             z_slider.pack_forget()
             t_slider.pack_forget()
+        else:
+            vol_shape = state["volume"].shape
+            is_rgb_2d = (
+                file_type in ["JPEG/PNG", "TIFF"]
+                and len(vol_shape) == 3
+                and vol_shape[2] == 3
+            )
 
-        # Reset zoom/pan when changing files
+            if is_rgb_2d:
+                state["z_max"] = 1
+                state["t_max"] = 1
+                state["z_index"] = 0
+                state["t_index"] = 0
+                z_slider.pack_forget()
+                t_slider.pack_forget()
+            else:
+                state["z_max"] = vol_shape[2]
+                state["t_max"] = vol_shape[3]
+                state["z_index"] = min(state["z_max"] // 2, state["z_max"] - 1)
+                state["t_index"] = min(state["t_max"] // 2, state["t_max"] - 1)
+
+                if state["z_max"] > 1:
+                    z_slider.config(to=state["z_max"] - 1)
+                    z_slider.set(state["z_index"])
+                    z_slider.pack(fill=tk.X, padx=10, pady=5)
+                else:
+                    z_slider.pack_forget()
+
+                if state["t_max"] > 1:
+                    t_slider.config(to=state["t_max"] - 1)
+                    t_slider.set(state["t_index"])
+                    t_slider.pack(fill=tk.X, padx=10, pady=5)
+                else:
+                    t_slider.pack_forget()
+
+        # Reset zoom/pan
         state["zoom_factor"] = 1.0
         state["pan_x"] = 0.0
         state["pan_y"] = 0.0
 
         display_current_slice()
 
-        # Throttle resize-triggered redraws to avoid flicker & callback storms
-        resize_pending = {"flag": False}
+    # Throttle resize-triggered redraws to avoid flicker & callback storms
+    resize_pending = {"flag": False}
 
-        def on_root_resize(event):
-            # Only handle resize events from the main window
-            if event.widget is not root:
-                return
-
-            # If a redraw is already scheduled, don't schedule another
-            if resize_pending["flag"]:
-                return
-
-            resize_pending["flag"] = True
-
-            def do_redraw():
-                resize_pending["flag"] = False
-                # Safe redraw
-                try:
-                    display_current_slice()
-                except Exception as e:
-                    print("[ERROR] Exception during display_current_slice on resize:", e)
-
-            # Schedule the redraw a bit later (e.g. 60 ms)
-            root.after(60, do_redraw)
-
-        root.bind("<Configure>", on_root_resize)
-
-    def display_current_slice():
-        """Grab current slice from volume, build display image, then show in Tk."""
-        pil_img = build_display_image()
-        if pil_img is None:
-            image_label.config(image="", text="Cannot display file", compound=tk.CENTER)
-            state["last_pil_image"] = None
+    def on_root_resize(event):
+        if event.widget is not root:
             return
+        if resize_pending["flag"]:
+            return
+        resize_pending["flag"] = True
 
-        # Store the final displayed image for export
-        state["last_pil_image"] = pil_img
+        def do_redraw():
+            resize_pending["flag"] = False
+            try:
+                display_current_slice()
+            except Exception as e:
+                print("[ERROR] Exception during display_current_slice on resize:", e)
 
-        # Show in Tkinter
-        tk_img = ImageTk.PhotoImage(pil_img)
-        image_label.config(image=tk_img, text="", compound=tk.NONE)
-        image_label.image = tk_img
+        root.after(60, do_redraw)
+
+    root.bind("<Configure>", on_root_resize)
 
     # --------------------------------------------------------
     # Bind events and initialize
     # --------------------------------------------------------
-    # Zoom (wheel)
-    root.bind("<MouseWheel>", on_mouse_wheel)             # Windows/macOS
-    root.bind("<Button-4>", lambda e: scroll_zoom(+1))    # old Linux
-    root.bind("<Button-5>", lambda e: scroll_zoom(-1))    # old Linux
+    root.bind("<MouseWheel>", on_mouse_wheel)
+    root.bind("<Button-4>", lambda e: scroll_zoom(+1))
+    root.bind("<Button-5>", lambda e: scroll_zoom(-1))
 
-    # Pan (drag on the image)
     image_label.bind("<Button-1>", on_left_down)
     image_label.bind("<B1-Motion>", on_left_drag)
     image_label.bind("<ButtonRelease-1>", on_left_up)
 
-    # Start at first file
     file_slider.set(0)
     load_current_file()
 
