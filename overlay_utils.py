@@ -1,0 +1,171 @@
+# overlay_utils.py
+
+import os
+import numpy as np
+import nibabel as nib
+from PIL import Image
+import cv2
+
+
+SUPPORTED_MASK_EXTS = {".nii", ".gz", ".nii.gz", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".npy"}
+
+
+def _lower_ext(path: str) -> str:
+    p = path.lower()
+    if p.endswith(".nii.gz"):
+        return ".nii.gz"
+    return os.path.splitext(p)[1]
+
+
+def load_mask(mask_path: str) -> np.ndarray:
+    """
+    Load a segmentation mask from:
+      - NIfTI (.nii, .nii.gz): returns float array
+      - PNG/JPG/TIFF: returns uint8 2D array (grayscale)
+      - NPY: returns numpy array as-is
+
+    Returns:
+      mask array as np.ndarray
+    """
+    ext = _lower_ext(mask_path)
+
+    if ext in [".nii", ".nii.gz"]:
+        m = nib.load(mask_path).get_fdata()
+        return np.asarray(m)
+
+    if ext == ".npy":
+        m = np.load(mask_path)
+        return np.asarray(m)
+
+    if ext in [".png", ".jpg", ".jpeg", ".tif", ".tiff"]:
+        with Image.open(mask_path) as img:
+            img = img.convert("L")
+            arr = np.array(img, dtype=np.uint8)
+        return arr
+
+    raise ValueError(f"Unsupported mask format: {mask_path}")
+
+
+def get_mask_slice(mask_vol: np.ndarray, z_index: int = 0, t_index: int = 0) -> np.ndarray:
+    """
+    Extract a 2D mask slice from possible mask shapes:
+      - (H, W)
+      - (H, W, Z)
+      - (H, W, Z, T)
+
+    If mask is smaller than requested indices, indices are clamped.
+
+    Returns:
+      2D mask array (H, W)
+    """
+    if mask_vol is None:
+        return None
+
+    m = np.asarray(mask_vol)
+
+    if m.ndim == 2:
+        return m
+
+    if m.ndim == 3:
+        z = int(np.clip(z_index, 0, m.shape[2] - 1))
+        return m[..., z]
+
+    if m.ndim == 4:
+        z = int(np.clip(z_index, 0, m.shape[2] - 1))
+        t = int(np.clip(t_index, 0, m.shape[3] - 1))
+        return m[..., z, t]
+
+    # Unknown shape; try to squeeze down
+    m2 = np.squeeze(m)
+    if m2.ndim == 2:
+        return m2
+    raise ValueError(f"Unsupported mask shape: {m.shape}")
+
+
+def to_binary_mask(mask2d: np.ndarray, threshold: float = 0.0) -> np.ndarray:
+    """
+    Convert a 2D mask to binary (0/1).
+    Default: anything > 0 becomes 1.
+    """
+    if mask2d is None:
+        return None
+
+    m = np.asarray(mask2d)
+
+    # Handle NaNs
+    m = np.nan_to_num(m)
+
+    # If mask is already uint8, treat >0 as foreground
+    bin_m = (m > threshold).astype(np.uint8)
+    return bin_m
+
+
+def resize_mask_nearest(mask2d: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+    """
+    Resize mask using nearest neighbor (critical for segmentation masks).
+    Returns uint8 0/1 mask.
+    """
+    if mask2d is None:
+        return None
+
+    m = np.asarray(mask2d).astype(np.uint8)
+    resized = cv2.resize(m, (int(target_w), int(target_h)), interpolation=cv2.INTER_NEAREST)
+    return resized.astype(np.uint8)
+
+
+def apply_overlay_to_pil(
+    base_pil: Image.Image,
+    mask2d_binary: np.ndarray,
+    alpha: float = 0.35,
+    color_rgb=(255, 0, 0),
+) -> Image.Image:
+    """
+    Alpha blend a solid color overlay on top of base_pil where mask == 1.
+
+    base_pil:
+      - PIL.Image, mode "L" or "RGB"
+    mask2d_binary:
+      - 2D uint8 array (0/1) same width/height as base_pil
+
+    alpha:
+      - 0.0..1.0
+
+    color_rgb:
+      - overlay color tuple
+
+    Returns:
+      PIL.Image in RGB mode
+    """
+    if base_pil is None or mask2d_binary is None:
+        return base_pil
+
+    alpha = float(alpha)
+    alpha = max(0.0, min(1.0, alpha))
+
+    # Ensure RGB output
+    if base_pil.mode != "RGB":
+        base_rgb = base_pil.convert("RGB")
+    else:
+        base_rgb = base_pil
+
+    base_arr = np.array(base_rgb, dtype=np.float32)  # (H, W, 3)
+    mask = (mask2d_binary > 0)
+
+    if mask.ndim != 2:
+        raise ValueError(f"mask2d_binary must be 2D, got shape {mask2d_binary.shape}")
+
+    if base_arr.shape[0] != mask.shape[0] or base_arr.shape[1] != mask.shape[1]:
+        raise ValueError(
+            f"Mask size {mask.shape[::-1]} does not match image size {(base_arr.shape[1], base_arr.shape[0])}"
+        )
+
+    overlay = np.zeros_like(base_arr)
+    overlay[:, :, 0] = float(color_rgb[0])
+    overlay[:, :, 1] = float(color_rgb[1])
+    overlay[:, :, 2] = float(color_rgb[2])
+
+    # Blend only where mask is True
+    base_arr[mask] = (1.0 - alpha) * base_arr[mask] + alpha * overlay[mask]
+
+    out = np.clip(base_arr, 0, 255).astype(np.uint8)
+    return Image.fromarray(out, mode="RGB")
