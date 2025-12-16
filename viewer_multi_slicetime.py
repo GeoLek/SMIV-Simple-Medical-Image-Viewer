@@ -31,13 +31,14 @@ def create_viewer(file_paths, modality=""):
         "file_paths": file_paths,
         "current_file_index": 0,
         "current_file_type": None,
-        "volume": None,  # either (H,W,3) RGB for PNG/TIFF, OR 4D (H,W,Z,T) for medical data
+        "volume": None,
         "z_index": 0,
         "t_index": 0,
         "z_max": 1,
         "t_max": 1,
         "zoom_factor": 1.0,
         "zoom_enabled": False,
+
         # Pan / dragging state
         "pan_x": 0.0,
         "pan_y": 0.0,
@@ -46,10 +47,14 @@ def create_viewer(file_paths, modality=""):
         "drag_start_y": 0,
         "drag_start_pan_x": 0.0,
         "drag_start_pan_y": 0.0,
+
+        # Overlay state
         "mask_path": None,
         "mask_volume": None,
         "overlay_enabled": False,
         "overlay_alpha": 35,  # 0..100
+        "overlay_label_colors": None,  # multiclass support
+        "overlay_outline": False,  # outline mode
     }
 
     # Preprocessing toggles/state
@@ -230,6 +235,7 @@ def create_viewer(file_paths, modality=""):
         state["mask_path"] = mask_path
         state["mask_volume"] = m
         state["overlay_enabled"] = True
+        state["overlay_label_colors"] = overlay_utils.default_label_colormap(m)
         overlay_var.set(True)
 
         messagebox.showinfo("Load Mask", f"Mask loaded:\n{os.path.basename(mask_path)}")
@@ -335,24 +341,17 @@ def create_viewer(file_paths, modality=""):
         if vol is None:
             return None
 
-        file_type = state.get("current_file_type")
-        is_rgb_2d = (
-            file_type in ["JPEG/PNG", "TIFF"]
-            and vol.ndim == 3
-            and vol.shape[2] == 3
-        )
+        ft = state["current_file_type"]
+        is_rgb = ft in ["JPEG/PNG", "TIFF"] and vol.ndim == 3
 
-        # Extract slice
-        if is_rgb_2d:
+        if is_rgb:
             slice_2d = vol.astype(np.float32)
         else:
             slice_2d = vol[..., state["z_index"], state["t_index"]].astype(np.float32)
-            # Normalize medical slice to [0..255]
-            min_val, max_val = slice_2d.min(), slice_2d.max()
-            if max_val != min_val:
-                slice_2d = (slice_2d - min_val) / (max_val - min_val) * 255.0
+            mn, mx = slice_2d.min(), slice_2d.max()
+            if mx > mn:
+                slice_2d = (slice_2d - mn) / (mx - mn) * 255.0
 
-        # Apply preprocessing
         out = image_processing.apply_all_processing(
             slice_2d,
             hist_eq=settings["hist_eq"].get(),
@@ -368,75 +367,43 @@ def create_viewer(file_paths, modality=""):
 
         out = np.clip(out, 0, 255).astype(np.uint8)
 
-        # Fit to window
-        frame_width = image_frame.winfo_width()
-        frame_height = image_frame.winfo_height()
-
         h, w = out.shape[:2]
-        if frame_width <= 1 or frame_height <= 1:
-            new_w, new_h = w, h
-        else:
-            max_display_width = max(100, frame_width - 10)
-            max_display_height = max(100, frame_height - 10)
-            scale = min(max_display_width / float(w), max_display_height / float(h))
-            if scale <= 0:
-                scale = 1.0
-            new_w = max(1, int(w * scale))
-            new_h = max(1, int(h * scale))
+        fw, fh = image_frame.winfo_width(), image_frame.winfo_height()
+        scale = min(fw / w, fh / h) if fw > 1 and fh > 1 else 1.0
+        new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
 
-        # Convert to PIL
         if out.ndim == 2:
-            pil_img = Image.fromarray(out, mode="L")
+            pil = Image.fromarray(out, "L")
         else:
-            # If colormap was applied to a grayscale image, OpenCV output is BGR
-            colormap_applied = settings["colormap"].get() and (not is_rgb_2d)
-            if colormap_applied:
-                pil_img = Image.fromarray(out[..., ::-1], mode="RGB")  # BGR->RGB
+            pil = Image.fromarray(out[..., ::-1] if settings["colormap"].get() and not is_rgb else out, "RGB")
+
+        pil = pil.resize((new_w, new_h), Image.BILINEAR)
+
+        # ---- Overlay ----
+        if state["overlay_enabled"] and state["mask_volume"] is not None:
+            m = overlay_utils.get_mask_slice(
+                state["mask_volume"], state["z_index"], state["t_index"]
+            )
+            m = overlay_utils.resize_mask_nearest(m, w, h)
+            m = image_processing.apply_zoom_and_pan_mask(
+                m, state["zoom_factor"], state["pan_x"], state["pan_y"]
+            )
+            m = overlay_utils.resize_mask_nearest(m, new_w, new_h)
+
+            alpha = state["overlay_alpha"] / 100.0
+
+            if state["overlay_label_colors"] is None:
+                m = overlay_utils.to_binary_mask(m)
+                pil = overlay_utils.apply_overlay_to_pil(pil, m, alpha)
             else:
-                pil_img = Image.fromarray(out, mode="RGB")  # already RGB
-
-        if (new_w, new_h) != (w, h):
-            pil_img = pil_img.resize((new_w, new_h), resample=Image.BILINEAR)
-
-        # Apply segmentation overlay (if enabled and mask loaded)
-        if state.get("overlay_enabled") and state.get("mask_volume") is not None:
-            try:
-                m2d = overlay_utils.get_mask_slice(
-                    state["mask_volume"],
-                    z_index=state.get("z_index", 0),
-                    t_index=state.get("t_index", 0),
-                )
-                m2d = overlay_utils.to_binary_mask(m2d, threshold=0.0)
-
-                # image slice size BEFORE window resizing
-                img_h, img_w = slice_2d.shape[:2]  # this is the pre-zoom slice size
-
-                if m2d.shape != (img_h, img_w):
-                    m2d = overlay_utils.resize_mask_nearest(m2d, img_w, img_h)
-
-                m2d = image_processing.apply_zoom_and_pan_mask(
-                    m2d,
-                    zoom_factor=state["zoom_factor"],
-                    pan_x=state["pan_x"],
-                    pan_y=state["pan_y"],
-                )
-
-                # Resize mask to match the final displayed image size
-                target_w, target_h = pil_img.size
-                m2d = overlay_utils.resize_mask_nearest(m2d, target_w, target_h)
-
-                alpha = float(state.get("overlay_alpha", 35)) / 100.0
-                pil_img = overlay_utils.apply_overlay_to_pil(
-                    pil_img,
-                    m2d,
+                pil = overlay_utils.apply_multiclass_overlay_to_pil(
+                    pil, m,
+                    label_colors=state["overlay_label_colors"],
                     alpha=alpha,
-                    color_rgb=(255, 0, 0),
+                    outline=state["overlay_outline"]
                 )
-            except Exception as e:
-                # Do not crash viewer if mask doesn't match; just show base image
-                print("[WARN] Overlay failed:", e)
 
-        return pil_img
+        return pil
 
     def display_current_slice():
         pil_img = build_display_image()
