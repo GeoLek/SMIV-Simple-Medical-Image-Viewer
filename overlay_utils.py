@@ -169,3 +169,65 @@ def apply_overlay_to_pil(
 
     out = np.clip(base_arr, 0, 255).astype(np.uint8)
     return Image.fromarray(out, mode="RGB")
+
+def apply_multiclass_overlay_to_pil(
+    base_pil: Image.Image,
+    mask2d: np.ndarray,
+    label_colors: dict,
+    alpha: float = 0.35,
+    outline: bool = False,
+):
+    """
+    Apply multi-class overlay. Safe fallback if only label=1 exists.
+    """
+    if base_pil.mode != "RGB":
+        base_pil = base_pil.convert("RGB")
+
+    base = np.array(base_pil, dtype=np.float32)
+    mask2d = np.asarray(mask2d)
+
+    for lbl, color in label_colors.items():
+        if lbl == 0:
+            continue
+
+        region = (mask2d == lbl)
+        if not np.any(region):
+            continue
+
+        if outline:
+            edges = cv2.Canny(region.astype(np.uint8) * 255, 50, 150)
+            region = edges > 0
+
+        base[region] = (1 - alpha) * base[region] + alpha * np.array(color)
+
+    return Image.fromarray(np.clip(base, 0, 255).astype(np.uint8))
+
+
+def default_label_colormap(mask_vol: np.ndarray):
+    """
+    Create a deterministic color map for labels found in the mask.
+    Label 0 is ignored (background).
+    """
+    if mask_vol is None:
+        return {}
+
+    labels = np.unique(mask_vol)
+    labels = labels[labels != 0]
+
+    # Simple repeating color palette (safe & readable)
+    palette = [
+        (255, 0, 0),
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 255, 0),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 128, 0),
+        (128, 0, 255),
+    ]
+
+    color_map = {}
+    for i, lbl in enumerate(labels):
+        color_map[int(lbl)] = palette[i % len(palette)]
+
+    return color_map
