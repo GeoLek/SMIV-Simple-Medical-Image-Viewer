@@ -153,6 +153,8 @@ def create_viewer(file_paths, modality=""):
     # --- Preprocessing controls
     preproc_frame = tk.Frame(root)
     preproc_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+    legend_label = tk.Label(preproc_frame, text="", justify="left", anchor="w")
+    legend_label.pack(fill=tk.X)
 
     Checkbutton(
         preproc_frame,
@@ -211,7 +213,11 @@ def create_viewer(file_paths, modality=""):
         display_current_slice()
 
     def on_alpha_change(val):
-        state["overlay_alpha"] = int(float(val))
+        v = int(float(val))
+        state["overlay_alpha"] = v
+        # keep Tk var synced (prevents desync weirdness)
+        if alpha_var.get() != v:
+            alpha_var.set(v)
         display_current_slice()
 
     def load_mask_dialog():
@@ -237,18 +243,55 @@ def create_viewer(file_paths, modality=""):
         state["overlay_enabled"] = True
         state["overlay_label_colors"] = overlay_utils.default_label_colormap(m)
         overlay_var.set(True)
+        alpha_var.set(state["overlay_alpha"])
+        outline_var.set(state["overlay_outline"])
 
         messagebox.showinfo("Load Mask", f"Mask loaded:\n{os.path.basename(mask_path)}")
         display_current_slice()
 
+        # Update legend text
+        lc = state["overlay_label_colors"] or {}
+        if len(lc) == 0:
+            legend_label.config(text="Overlay labels: (binary)")
+        else:
+            lines = ["Overlay labels:"]
+            for lbl, col in sorted(lc.items()):
+                lines.append(f"  Label {lbl}: RGB{tuple(col)}")
+            legend_label.config(text="\n".join(lines))
+
     mask_btn = tk.Button(preproc_frame, text="Load Mask", command=load_mask_dialog)
     mask_btn.pack(anchor="w", pady=(8, 0))
+
+    def clear_mask():
+        state["mask_path"] = None
+        state["mask_volume"] = None
+        state["overlay_label_colors"] = None
+        state["overlay_enabled"] = False
+        overlay_var.set(False)
+        display_current_slice()
+        legend_label.config(text="")
+
+    clear_btn = tk.Button(preproc_frame, text="Clear Mask", command=clear_mask)
+    clear_btn.pack(anchor="w")
 
     Checkbutton(
         preproc_frame,
         text="Show Segmentation Overlay",
         variable=overlay_var,
         command=toggle_overlay
+    ).pack(anchor="w")
+
+    outline_var = BooleanVar(value=False)
+
+    def toggle_outline():
+        state["overlay_outline"] = outline_var.get()
+        display_current_slice()
+
+    Checkbutton(
+        preproc_frame,
+        text="Overlay Outline Only",
+        variable=outline_var,
+        command=toggle_outline
     ).pack(anchor="w")
 
     Scale(
@@ -342,7 +385,11 @@ def create_viewer(file_paths, modality=""):
             return None
 
         ft = state["current_file_type"]
-        is_rgb = ft in ["JPEG/PNG", "TIFF"] and vol.ndim == 3
+        is_rgb = (
+                ft in ["JPEG/PNG", "TIFF"]
+                and vol.ndim == 3
+                and vol.shape[2] == 3
+        )
 
         if is_rgb:
             slice_2d = vol.astype(np.float32)
@@ -369,6 +416,8 @@ def create_viewer(file_paths, modality=""):
 
         h, w = out.shape[:2]
         fw, fh = image_frame.winfo_width(), image_frame.winfo_height()
+        fw = max(1, fw - 10)
+        fh = max(1, fh - 10)
         scale = min(fw / w, fh / h) if fw > 1 and fh > 1 else 1.0
         new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
 
@@ -377,18 +426,27 @@ def create_viewer(file_paths, modality=""):
         else:
             pil = Image.fromarray(out[..., ::-1] if settings["colormap"].get() and not is_rgb else out, "RGB")
 
-        pil = pil.resize((new_w, new_h), Image.BILINEAR)
+        if (new_w, new_h) != (w, h):
+            pil = pil.resize((new_w, new_h), Image.BILINEAR)
 
         # ---- Overlay ----
         if state["overlay_enabled"] and state["mask_volume"] is not None:
             m = overlay_utils.get_mask_slice(
                 state["mask_volume"], state["z_index"], state["t_index"]
             )
+
+            # Robust label handling:
+            # - If NIfTI float labels exist, round to nearest int
+            # - Ensure uint8 for OpenCV resizing
+            m = np.nan_to_num(m)
+            m = np.rint(m).astype(np.int32)
+
             m = overlay_utils.resize_mask_nearest(m, w, h)
             m = image_processing.apply_zoom_and_pan_mask(
                 m, state["zoom_factor"], state["pan_x"], state["pan_y"]
             )
             m = overlay_utils.resize_mask_nearest(m, new_w, new_h)
+            m = m.astype(np.int32)
 
             alpha = state["overlay_alpha"] / 100.0
 
