@@ -55,6 +55,7 @@ def create_viewer(file_paths, modality=""):
         "overlay_alpha": 35,  # 0..100
         "overlay_label_colors": None,  # multiclass support
         "overlay_outline": False,  # outline mode
+        "overlay_label_names": None,  # {int_label: "name"}
     }
 
     # Preprocessing toggles/state
@@ -242,6 +243,7 @@ def create_viewer(file_paths, modality=""):
         state["mask_volume"] = m
         state["overlay_enabled"] = True
         state["overlay_label_colors"] = overlay_utils.default_label_colormap(m)
+        state["overlay_label_names"] = overlay_utils.load_label_names_for_mask(mask_path)
         overlay_var.set(True)
         alpha_var.set(state["overlay_alpha"])
         outline_var.set(state["overlay_outline"])
@@ -255,8 +257,13 @@ def create_viewer(file_paths, modality=""):
             legend_label.config(text="Overlay labels: (binary)")
         else:
             lines = ["Overlay labels:"]
+            names = state.get("overlay_label_names") or {}
             for lbl, col in sorted(lc.items()):
-                lines.append(f"  Label {lbl}: RGB{tuple(col)}")
+                name = names.get(int(lbl))
+                if name:
+                    lines.append(f"  Label {lbl} ({name}): RGB{tuple(col)}")
+                else:
+                    lines.append(f"  Label {lbl}: RGB{tuple(col)}")
             legend_label.config(text="\n".join(lines))
 
     mask_btn = tk.Button(preproc_frame, text="Load Mask", command=load_mask_dialog)
