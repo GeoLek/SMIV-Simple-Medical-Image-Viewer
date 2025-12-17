@@ -5,10 +5,71 @@ import numpy as np
 import nibabel as nib
 from PIL import Image
 import cv2
+import json
 
 
 SUPPORTED_MASK_EXTS = {".nii", ".gz", ".nii.gz", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".npy"}
 
+
+def load_label_names_for_mask(mask_path: str):
+    """
+    Try to load human-readable label names for a mask from a sidecar JSON.
+
+    Supported sidecars (checked in this order):
+      1) <mask_path>.labels.json     (e.g. mask.nii.gz.labels.json)
+      2) <mask_stem>.labels.json     (e.g. mask.labels.json)
+      3) <mask_stem>.json            (e.g. mask.json)
+
+    Expected JSON formats (either is fine):
+      A) {"1": "liver", "2": "pancreas"}
+      B) {"labels": {"1": "liver", "2": "pancreas"}}
+
+    Returns:
+      dict[int, str] or {} if not found/invalid.
+    """
+    candidates = []
+
+    # 1) mask.nii.gz.labels.json
+    candidates.append(mask_path + ".labels.json")
+
+    # build stem safely for .nii.gz
+    p = mask_path
+    if p.lower().endswith(".nii.gz"):
+        stem = p[:-7]
+    else:
+        stem = os.path.splitext(p)[0]
+
+    # 2) mask.labels.json
+    candidates.append(stem + ".labels.json")
+    # 3) mask.json
+    candidates.append(stem + ".json")
+
+    for js in candidates:
+        if not os.path.exists(js):
+            continue
+        try:
+            with open(js, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if isinstance(data, dict) and "labels" in data and isinstance(data["labels"], dict):
+                data = data["labels"]
+
+            if not isinstance(data, dict):
+                continue
+
+            out = {}
+            for k, v in data.items():
+                try:
+                    kk = int(k)
+                except Exception:
+                    continue
+                if isinstance(v, str) and v.strip():
+                    out[kk] = v.strip()
+            return out
+        except Exception:
+            continue
+
+    return {}
 
 def _lower_ext(path: str) -> str:
     p = path.lower()
