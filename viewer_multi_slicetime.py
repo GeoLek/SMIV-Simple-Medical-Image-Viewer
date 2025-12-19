@@ -9,6 +9,7 @@ from PIL import Image, ImageTk
 import image_loader
 import image_processing
 import overlay_utils
+import json
 
 def create_viewer(file_paths, modality=""):
     """
@@ -56,6 +57,8 @@ def create_viewer(file_paths, modality=""):
         "overlay_label_colors": None,  # multiclass support
         "overlay_outline": False,  # outline mode
         "overlay_label_names": None,  # {int_label: "name"}
+        "overlay_warned_mismatch": False,
+        "overlay_label_visible": None,  # {label:int -> bool}
     }
 
     # Preprocessing toggles/state
@@ -243,6 +246,9 @@ def create_viewer(file_paths, modality=""):
         state["mask_volume"] = m
         state["overlay_enabled"] = True
         state["overlay_label_colors"] = overlay_utils.default_label_colormap(m)
+        lc = state["overlay_label_colors"] or {}
+        state["overlay_label_visible"] = {int(lbl): True for lbl in lc.keys()}
+        state["overlay_label_names"] = overlay_utils.load_label_names_for_mask(mask_path)
         state["overlay_label_names"] = overlay_utils.load_label_names_for_mask(mask_path)
         overlay_var.set(True)
         alpha_var.set(state["overlay_alpha"])
@@ -250,24 +256,120 @@ def create_viewer(file_paths, modality=""):
 
         messagebox.showinfo("Load Mask", f"Mask loaded:\n{os.path.basename(mask_path)}")
         display_current_slice()
-
-        # Update legend text
-        lc = state["overlay_label_colors"] or {}
-        if len(lc) == 0:
-            legend_label.config(text="Overlay labels: (binary)")
-        else:
-            lines = ["Overlay labels:"]
-            names = state.get("overlay_label_names") or {}
-            for lbl, col in sorted(lc.items()):
-                name = names.get(int(lbl))
-                if name:
-                    lines.append(f"  Label {lbl} ({name}): RGB{tuple(col)}")
-                else:
-                    lines.append(f"  Label {lbl}: RGB{tuple(col)}")
-            legend_label.config(text="\n".join(lines))
+        refresh_legend()
+        rebuild_label_checkboxes()
 
     mask_btn = tk.Button(preproc_frame, text="Load Mask", command=load_mask_dialog)
     mask_btn.pack(anchor="w", pady=(8, 0))
+    state["overlay_warned_mismatch"] = False
+
+    def refresh_legend():
+        lc = state.get("overlay_label_colors") or {}
+        names = state.get("overlay_label_names") or {}
+
+        if state.get("mask_volume") is None:
+            legend_label.config(text="")
+            return
+
+        if len(lc) == 0:
+            legend_label.config(text="Overlay labels: (binary)")
+            return
+
+        lines = ["Overlay labels:"]
+        for lbl, col in sorted(lc.items()):
+            lbl_i = int(lbl)
+            name = names.get(lbl_i)
+            if name:
+                lines.append(f"  Label {lbl_i} ({name}): RGB{tuple(col)}")
+            else:
+                lines.append(f"  Label {lbl_i}: RGB{tuple(col)}")
+        legend_label.config(text="\n".join(lines))
+
+    def load_labelmap_dialog():
+        """
+        Load a label-map JSON file mapping label integers to names.
+        Supported JSON formats:
+          A) {"1": "liver", "2": "pancreas"}
+          B) {"labels": {"1": "liver", "2": "pancreas"}}
+        """
+        path = filedialog.askopenfilename(
+            title="Select label-map JSON",
+            initialdir=".",
+            filetypes=[("JSON files", "*.json"), ("All files", "*")],
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if isinstance(data, dict) and "labels" in data and isinstance(data["labels"], dict):
+                data = data["labels"]
+
+            if not isinstance(data, dict):
+                raise ValueError("Label-map JSON must be a dict or contain a 'labels' dict.")
+
+            out = {}
+            for k, v in data.items():
+                try:
+                    kk = int(k)
+                except Exception:
+                    continue
+                if isinstance(v, str) and v.strip():
+                    out[kk] = v.strip()
+
+            state["overlay_label_names"] = out
+            messagebox.showinfo("Label-map", f"Loaded {len(out)} label names.")
+            display_current_slice()
+
+            # Update legend immediately
+            refresh_legend()
+
+        except Exception as e:
+            messagebox.showerror("Label-map", f"Failed to load label-map:\n{e}")
+
+    labelmap_btn = tk.Button(preproc_frame, text="Load Label-Map (JSON)", command=load_labelmap_dialog)
+    labelmap_btn.pack(anchor="w")
+
+    labels_frame = tk.Frame(preproc_frame)
+    labels_frame.pack(fill=tk.X, pady=(5, 5))
+
+    label_vars = {}  # local dict: lbl -> BooleanVar
+
+    def rebuild_label_checkboxes():
+        # Clear old
+        for w in labels_frame.winfo_children():
+            w.destroy()
+        label_vars.clear()
+
+        lc = state.get("overlay_label_colors") or {}
+        vis = state.get("overlay_label_visible") or {}
+
+        if len(lc) == 0:
+            return
+
+        tk.Label(labels_frame, text="Visible labels:", anchor="w").pack(anchor="w")
+
+        for lbl in sorted(lc.keys()):
+            lbl_i = int(lbl)
+            v = BooleanVar(value=bool(vis.get(lbl_i, True)))
+            label_vars[lbl_i] = v
+
+            def _make_cmd(lid):
+                return lambda: on_label_visibility_change(lid)
+
+            cb = Checkbutton(labels_frame, text=f"Label {lbl_i}", variable=v, command=_make_cmd(lbl_i))
+            cb.pack(anchor="w")
+
+    def on_label_visibility_change(lbl_i):
+        vis = state.get("overlay_label_visible") or {}
+        v = label_vars.get(lbl_i)
+        if v is None:
+            return
+        vis[int(lbl_i)] = bool(v.get())
+        state["overlay_label_visible"] = vis
+        display_current_slice()
 
     def clear_mask():
         state["mask_path"] = None
@@ -276,7 +378,10 @@ def create_viewer(file_paths, modality=""):
         state["overlay_enabled"] = False
         overlay_var.set(False)
         display_current_slice()
-        legend_label.config(text="")
+        state["overlay_label_names"] = None
+        refresh_legend()
+        state["overlay_label_visible"] = None
+        rebuild_label_checkboxes()
 
     clear_btn = tk.Button(preproc_frame, text="Clear Mask", command=clear_mask)
     clear_btn.pack(anchor="w")
@@ -447,6 +552,10 @@ def create_viewer(file_paths, modality=""):
             # - Ensure uint8 for OpenCV resizing
             m = np.nan_to_num(m)
             m = np.rint(m).astype(np.int32)
+            mh, mw = m.shape[:2]
+            if (mw != w or mh != h) and not state.get("overlay_warned_mismatch", False):
+                state["overlay_warned_mismatch"] = True
+                print(f"[WARN] Mask shape {mw}x{mh} != image slice {w}x{h}. Resizing mask to match.")
 
             m = overlay_utils.resize_mask_nearest(m, w, h)
             m = image_processing.apply_zoom_and_pan_mask(
