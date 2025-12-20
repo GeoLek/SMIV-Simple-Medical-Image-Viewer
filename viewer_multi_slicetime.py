@@ -258,10 +258,11 @@ def create_viewer(file_paths, modality=""):
         display_current_slice()
         refresh_legend()
         rebuild_label_checkboxes()
+        state["overlay_warned_mismatch"] = False
 
     mask_btn = tk.Button(preproc_frame, text="Load Mask", command=load_mask_dialog)
     mask_btn.pack(anchor="w", pady=(8, 0))
-    state["overlay_warned_mismatch"] = False
+
 
     def refresh_legend():
         lc = state.get("overlay_label_colors") or {}
@@ -574,7 +575,8 @@ def create_viewer(file_paths, modality=""):
                     pil, m,
                     label_colors=state["overlay_label_colors"],
                     alpha=alpha,
-                    outline=state["overlay_outline"]
+                    outline=state["overlay_outline"],
+                    label_visible=state.get("overlay_label_visible"),
                 )
 
         return pil
