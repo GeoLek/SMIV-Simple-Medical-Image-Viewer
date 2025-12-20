@@ -237,6 +237,7 @@ def apply_multiclass_overlay_to_pil(
     label_colors: dict,
     alpha: float = 0.35,
     outline: bool = False,
+    label_visible: dict | None = None,
 ):
     """
     Apply multi-class overlay. Safe fallback if only label=1 exists.
@@ -246,12 +247,19 @@ def apply_multiclass_overlay_to_pil(
 
     base = np.array(base_pil, dtype=np.float32)
     mask2d = np.asarray(mask2d)
+    label_visible = label_visible or {}
 
     for lbl, color in label_colors.items():
-        if lbl == 0:
+        lbl_i = int(lbl)
+
+        if lbl_i == 0:
             continue
 
-        region = (mask2d == lbl)
+        # If label is explicitly set to False, skip rendering it
+        if lbl_i in label_visible and not bool(label_visible[lbl_i]):
+            continue
+
+        region = (mask2d == lbl_i)
         if not np.any(region):
             continue
 
