@@ -1,5 +1,7 @@
 # viewer_multi_slicetime.py
 
+# viewer_multi_slicetime.py
+
 import os
 import tkinter as tk
 from tkinter import ttk, BooleanVar, IntVar, Checkbutton, Scale, filedialog, messagebox
@@ -11,6 +13,7 @@ import image_processing
 import overlay_utils
 import ui_theme
 import json
+
 
 class CollapsibleSection(tk.Frame):
     """
@@ -55,6 +58,86 @@ class CollapsibleSection(tk.Frame):
             self.content.pack_forget()
 
 
+def _safe_apply_viewer_theme(root, theme, exclude_widgets=None):
+    """
+    Apply theme to tk widgets safely.
+    This avoids hard dependency on ui_theme.apply_viewer_theme (in case it's not present).
+    """
+    exclude_widgets = set(exclude_widgets or [])
+
+    def _apply_to_widget(w):
+        if w in exclude_widgets:
+            return
+
+        cls = w.winfo_class()
+
+        # tk widgets
+        if cls in ("Frame", "Labelframe", "Toplevel"):
+            try:
+                w.configure(bg=theme["bg"])
+            except Exception:
+                pass
+        elif cls == "Label":
+            try:
+                w.configure(bg=theme["bg"], fg=theme["text"])
+            except Exception:
+                pass
+        elif cls == "Button":
+            try:
+                w.configure(
+                    bg=theme["button"],
+                    fg=theme["text"],
+                    activebackground=theme["button_hover"],
+                    activeforeground="black",
+                )
+            except Exception:
+                pass
+        elif cls == "Checkbutton":
+            try:
+                w.configure(
+                    bg=theme["bg"],
+                    fg=theme["text"],
+                    activebackground=theme["bg"],
+                    selectcolor=theme["bg"],
+                )
+            except Exception:
+                pass
+        elif cls == "Scale":
+            try:
+                w.configure(
+                    bg=theme["bg"],
+                    fg=theme["text"],
+                    highlightbackground=theme["bg"],
+                )
+            except Exception:
+                pass
+        elif cls == "Canvas":
+            try:
+                w.configure(bg=theme["bg"])
+            except Exception:
+                pass
+
+        # recurse
+        for child in w.winfo_children():
+            _apply_to_widget(child)
+
+    # Root background
+    try:
+        root.configure(bg=theme["bg"])
+    except Exception:
+        pass
+
+    _apply_to_widget(root)
+
+    # TTK style (Notebook, etc.)
+    try:
+        style = ttk.Style()
+        style.configure("TNotebook", background=theme["bg"])
+        style.configure("TNotebook.Tab", padding=(10, 6))
+    except Exception:
+        pass
+
+
 def create_viewer(file_paths, modality=""):
     """
     Multi-file, multi-slice/time viewer with:
@@ -65,11 +148,16 @@ def create_viewer(file_paths, modality=""):
       - Zoom (mouse wheel) + Pan (left-drag)
       - Overlay: mask load/clear + alpha + outline + label visibility + label-map names
       - UI: PanedWindow (image left, toolbox right) + toolbox tabs
+      - Pixel inspector (hover) in status bar
+      - Reset preprocessing button
+      - Quick actions bar
     """
 
     root = tk.Toplevel()
     root.title("Multi-File, Multi-Slice/Time Viewer (Zoom + Pan + Preprocessing + Overlay)")
     root.geometry("1200x800")
+
+    theme = ui_theme.THEME
 
     # --------------------------------------------------------
     # Viewer state
@@ -105,6 +193,13 @@ def create_viewer(file_paths, modality=""):
         "overlay_label_names": None,  # {int_label: "name"}
         "overlay_warned_mismatch": False,  # warn once per mask
         "overlay_label_visible": None,  # {label:int -> bool}
+
+        # Pixel inspector (hover)
+        "inspector_text": "",
+        "last_disp_out": None,          # uint8 image BEFORE resize (H,W) or (H,W,3)
+        "last_disp_base_wh": None,      # (w,h) of last_disp_out
+        "last_disp_scaled_wh": None,    # (new_w,new_h) after resize
+        "last_mask_scaled": None,       # mask resized to (new_w,new_h), int32 (or None)
     }
 
     # Preprocessing toggles/state
@@ -122,8 +217,25 @@ def create_viewer(file_paths, modality=""):
     root.grid_rowconfigure(1, weight=1)
     root.grid_columnconfigure(0, weight=1)
 
-    info_label = tk.Label(root, font=("Arial", 14), anchor="w")
-    info_label.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 4))
+    # Header row: info label + quick actions
+    header_row = tk.Frame(root)
+    header_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 4))
+    header_row.grid_columnconfigure(0, weight=1)
+
+    info_label = tk.Label(header_row, font=("Arial", 14), anchor="w")
+    info_label.grid(row=0, column=0, sticky="ew")
+
+    quick_bar = tk.Frame(header_row)
+    quick_bar.grid(row=0, column=1, sticky="e", padx=(10, 0))
+
+    btn_q_reset_view = tk.Button(quick_bar, text="Reset View")
+    btn_q_reset_pre = tk.Button(quick_bar, text="Reset Preproc")
+    btn_q_load_mask = tk.Button(quick_bar, text="Load Mask")
+    btn_q_toggle_overlay = tk.Button(quick_bar, text="Overlay On/Off")
+    btn_q_export = tk.Button(quick_bar, text="Export PNG")
+
+    for b in (btn_q_reset_view, btn_q_reset_pre, btn_q_load_mask, btn_q_toggle_overlay, btn_q_export):
+        b.pack(side=tk.LEFT, padx=4)
 
     main_pane = ttk.Panedwindow(root, orient=tk.HORIZONTAL)
     main_pane.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
@@ -158,15 +270,14 @@ def create_viewer(file_paths, modality=""):
     notebook.add(tab_preproc, text="Preprocessing")
     notebook.add(tab_overlay, text="Overlay")
 
-    # Make tabs match theme backgrounds (since they are tk.Frame)
-    tab_nav.configure(bg=ui_theme.THEME["bg"])
-    tab_preproc.configure(bg=ui_theme.THEME["bg"])
-    tab_overlay.configure(bg=ui_theme.THEME["bg"])
+    tab_nav.configure(bg=theme["bg"])
+    tab_preproc.configure(bg=theme["bg"])
+    tab_overlay.configure(bg=theme["bg"])
 
     # --------------------------------------------------------
     # NAV TAB: file navigation + sliders + zoom
     # --------------------------------------------------------
-    nav_frame = tk.Frame(tab_nav, bg=ui_theme.THEME["bg"])
+    nav_frame = tk.Frame(tab_nav, bg=theme["bg"])
     nav_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
 
     btn_prev = tk.Button(nav_frame, text="<< Prev File")
@@ -186,7 +297,7 @@ def create_viewer(file_paths, modality=""):
     z_slider = ttk.Scale(tab_nav, from_=0, to=0, orient="horizontal")
     t_slider = ttk.Scale(tab_nav, from_=0, to=0, orient="horizontal")
 
-    # Slice/time sliders live in Navigation tab
+    # Slice/time sliders live in Navigation tab (hidden until needed)
     z_slider.pack(fill=tk.X, padx=10, pady=(5, 5))
     t_slider.pack(fill=tk.X, padx=10, pady=(5, 10))
     z_slider.pack_forget()
@@ -206,7 +317,11 @@ def create_viewer(file_paths, modality=""):
         tab_nav,
         text="Enable Zoom (wheel) + Pan (drag)",
         variable=zoom_var,
-        command=toggle_zoom
+        command=toggle_zoom,
+        bg=theme["bg"],
+        fg=theme["text"],
+        activebackground=theme["bg"],
+        selectcolor=theme["bg"],
     ).pack(anchor="w", padx=10, pady=(0, 5))
 
     def reset_view():
@@ -247,28 +362,40 @@ def create_viewer(file_paths, modality=""):
     # --------------------------------------------------------
     # PREPROC TAB
     # --------------------------------------------------------
-    preproc_frame = tk.Frame(tab_preproc, bg=ui_theme.THEME["bg"])
+    preproc_frame = tk.Frame(tab_preproc, bg=theme["bg"])
     preproc_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
     Checkbutton(
         preproc_frame,
         text="Histogram Equalization",
         variable=settings["hist_eq"],
-        command=lambda: display_current_slice()
+        command=lambda: display_current_slice(),
+        bg=theme["bg"],
+        fg=theme["text"],
+        activebackground=theme["bg"],
+        selectcolor=theme["bg"],
     ).pack(anchor="w")
 
     Checkbutton(
         preproc_frame,
         text="Apply Colormap",
         variable=settings["colormap"],
-        command=lambda: display_current_slice()
+        command=lambda: display_current_slice(),
+        bg=theme["bg"],
+        fg=theme["text"],
+        activebackground=theme["bg"],
+        selectcolor=theme["bg"],
     ).pack(anchor="w")
 
     Checkbutton(
         preproc_frame,
         text="Brightness/Contrast",
         variable=settings["brightness_contrast"],
-        command=lambda: display_current_slice()
+        command=lambda: display_current_slice(),
+        bg=theme["bg"],
+        fg=theme["text"],
+        activebackground=theme["bg"],
+        selectcolor=theme["bg"],
     ).pack(anchor="w")
 
     Scale(
@@ -278,7 +405,7 @@ def create_viewer(file_paths, modality=""):
         label="Brightness",
         variable=settings["brightness"],
         orient=tk.HORIZONTAL,
-        command=lambda x: display_current_slice()
+        command=lambda _x: display_current_slice()
     ).pack(fill=tk.X, pady=(5, 0))
 
     Scale(
@@ -289,13 +416,25 @@ def create_viewer(file_paths, modality=""):
         label="Contrast",
         variable=settings["contrast"],
         orient=tk.HORIZONTAL,
-        command=lambda x: display_current_slice()
+        command=lambda _x: display_current_slice()
     ).pack(fill=tk.X, pady=(5, 0))
+
+    def reset_preprocessing():
+        settings["hist_eq"].set(False)
+        settings["colormap"].set(False)
+        settings["brightness_contrast"].set(False)
+        settings["brightness"].set(0)
+        settings["contrast"].set(1)
+        display_current_slice()
+
+    tk.Button(preproc_frame, text="Reset Preprocessing", command=reset_preprocessing).pack(
+        anchor="w", pady=(10, 0)
+    )
 
     # --------------------------------------------------------
     # OVERLAY TAB
     # --------------------------------------------------------
-    overlay_frame = tk.Frame(tab_overlay, bg=ui_theme.THEME["bg"])
+    overlay_frame = tk.Frame(tab_overlay, bg=theme["bg"])
     overlay_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
     legend_label = tk.Label(overlay_frame, text="", justify="left", anchor="w")
@@ -408,8 +547,13 @@ def create_viewer(file_paths, modality=""):
 
         q = (label_search_var.get() or "").strip().lower()
 
-        tk.Label(labels_frame, text="Visible labels:", anchor="w",
-                 bg=ui_theme.THEME["bg"], fg=ui_theme.THEME["text"]).pack(anchor="w", pady=(0, 4))
+        tk.Label(
+            labels_frame,
+            text="Visible labels:",
+            anchor="w",
+            bg=theme["bg"],
+            fg=theme["text"],
+        ).pack(anchor="w", pady=(0, 4))
 
         for lbl in sorted(lc.keys()):
             lbl_i = int(lbl)
@@ -428,10 +572,10 @@ def create_viewer(file_paths, modality=""):
                 text=txt,
                 variable=v,
                 command=(lambda lid=lbl_i: on_label_visibility_change(lid)),
-                bg=ui_theme.THEME["bg"],
-                fg=ui_theme.THEME["text"],
-                activebackground=ui_theme.THEME["bg"],
-                selectcolor=ui_theme.THEME["bg"],
+                bg=theme["bg"],
+                fg=theme["text"],
+                activebackground=theme["bg"],
+                selectcolor=theme["bg"],
             )
             cb.pack(anchor="w")
 
@@ -544,13 +688,13 @@ def create_viewer(file_paths, modality=""):
             messagebox.showerror("Label-map", f"Failed to load label-map:\n{e}")
 
     # -------- UI (AFTER functions exist) --------
-    sec_mask = CollapsibleSection(overlay_frame, "Mask", theme=ui_theme.THEME, open_by_default=True)
+    sec_mask = CollapsibleSection(overlay_frame, "Mask", theme=theme, open_by_default=True)
     sec_mask.pack(fill=tk.X, pady=(4, 6))
 
-    sec_appearance = CollapsibleSection(overlay_frame, "Appearance", theme=ui_theme.THEME, open_by_default=False)
+    sec_appearance = CollapsibleSection(overlay_frame, "Appearance", theme=theme, open_by_default=False)
     sec_appearance.pack(fill=tk.X, pady=(4, 6))
 
-    sec_labels = CollapsibleSection(overlay_frame, "Labels", theme=ui_theme.THEME, open_by_default=True)
+    sec_labels = CollapsibleSection(overlay_frame, "Labels", theme=theme, open_by_default=True)
     sec_labels.pack(fill=tk.BOTH, expand=True, pady=(4, 6))
 
     # Mask section
@@ -563,10 +707,10 @@ def create_viewer(file_paths, modality=""):
         text="Show Segmentation Overlay",
         variable=overlay_var,
         command=toggle_overlay,
-        bg=ui_theme.THEME["bg"],
-        fg=ui_theme.THEME["text"],
-        activebackground=ui_theme.THEME["bg"],
-        selectcolor=ui_theme.THEME["bg"],
+        bg=theme["bg"],
+        fg=theme["text"],
+        activebackground=theme["bg"],
+        selectcolor=theme["bg"],
     ).pack(anchor="w", pady=(8, 0))
 
     # Appearance section
@@ -575,10 +719,10 @@ def create_viewer(file_paths, modality=""):
         text="Overlay Outline Only",
         variable=outline_var,
         command=toggle_outline,
-        bg=ui_theme.THEME["bg"],
-        fg=ui_theme.THEME["text"],
-        activebackground=ui_theme.THEME["bg"],
-        selectcolor=ui_theme.THEME["bg"],
+        bg=theme["bg"],
+        fg=theme["text"],
+        activebackground=theme["bg"],
+        selectcolor=theme["bg"],
     ).pack(anchor="w")
 
     Scale(
@@ -592,28 +736,28 @@ def create_viewer(file_paths, modality=""):
     ).pack(fill=tk.X, pady=(4, 0))
 
     # Labels section: search + bulk actions + scrollable list
-    search_row = tk.Frame(sec_labels.content, bg=ui_theme.THEME["bg"])
+    search_row = tk.Frame(sec_labels.content, bg=theme["bg"])
     search_row.pack(fill=tk.X, pady=(0, 6))
-    tk.Label(search_row, text="Search:", bg=ui_theme.THEME["bg"], fg=ui_theme.THEME["text"]).pack(side=tk.LEFT)
+    tk.Label(search_row, text="Search:", bg=theme["bg"], fg=theme["text"]).pack(side=tk.LEFT)
     ttk.Entry(search_row, textvariable=label_search_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
 
-    actions_row = tk.Frame(sec_labels.content, bg=ui_theme.THEME["bg"])
+    actions_row = tk.Frame(sec_labels.content, bg=theme["bg"])
     actions_row.pack(fill=tk.X, pady=(0, 6))
     tk.Button(actions_row, text="All", command=lambda: set_all_labels(True)).pack(side=tk.LEFT, padx=(0, 6))
     tk.Button(actions_row, text="None", command=lambda: set_all_labels(False)).pack(side=tk.LEFT, padx=(0, 6))
     tk.Button(actions_row, text="Invert", command=invert_labels).pack(side=tk.LEFT)
 
-    labels_outer = tk.Frame(sec_labels.content, bg=ui_theme.THEME["bg"])
+    labels_outer = tk.Frame(sec_labels.content, bg=theme["bg"])
     labels_outer.pack(fill=tk.BOTH, expand=True)
 
-    labels_canvas = tk.Canvas(labels_outer, highlightthickness=0, bg=ui_theme.THEME["bg"])
+    labels_canvas = tk.Canvas(labels_outer, highlightthickness=0, bg=theme["bg"])
     labels_scroll = tk.Scrollbar(labels_outer, orient=tk.VERTICAL, command=labels_canvas.yview)
     labels_canvas.configure(yscrollcommand=labels_scroll.set)
 
     labels_scroll.pack(side=tk.RIGHT, fill=tk.Y)
     labels_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-    labels_frame = tk.Frame(labels_canvas, bg=ui_theme.THEME["bg"])
+    labels_frame = tk.Frame(labels_canvas, bg=theme["bg"])
     labels_canvas.create_window((0, 0), window=labels_frame, anchor="nw")
 
     labels_frame.bind("<Configure>", _sync_labels_scrollregion)
@@ -631,7 +775,6 @@ def create_viewer(file_paths, modality=""):
     metadata_win.title("File Metadata")
     metadata_label = tk.Label(metadata_win, font=("Arial", 12), justify="left", anchor="w")
     metadata_label.pack(padx=10, pady=10)
-    ui_theme.apply_viewer_theme(metadata_win)
 
     # --------------------------------------------------------
     # Helpers
@@ -652,6 +795,10 @@ def create_viewer(file_paths, modality=""):
 
         if state.get("overlay_enabled") and state.get("mask_volume") is not None:
             parts.append(f"Overlay {state.get('overlay_alpha', 35)}%")
+
+        insp = state.get("inspector_text", "")
+        if insp:
+            parts.append(insp)
 
         status_label.config(text=" | ".join(parts))
 
@@ -706,11 +853,92 @@ def create_viewer(file_paths, modality=""):
         display_current_slice()
 
     # --------------------------------------------------------
+    # Pixel inspector helpers
+    # --------------------------------------------------------
+    def _image_top_left_in_label():
+        """
+        Label can be larger than the image. Compute where the image sits inside the label.
+        """
+        scaled = state.get("last_disp_scaled_wh")
+        if not scaled:
+            return None
+
+        img_w, img_h = scaled
+        lw = max(1, image_label.winfo_width())
+        lh = max(1, image_label.winfo_height())
+
+        ox = (lw - img_w) // 2
+        oy = (lh - img_h) // 2
+        return ox, oy, img_w, img_h
+
+    def on_mouse_move(event):
+        out = state.get("last_disp_out")
+        base_wh = state.get("last_disp_base_wh")
+        scaled_wh = state.get("last_disp_scaled_wh")
+        if out is None or base_wh is None or scaled_wh is None:
+            state["inspector_text"] = ""
+            update_status()
+            return
+
+        tl = _image_top_left_in_label()
+        if tl is None:
+            state["inspector_text"] = ""
+            update_status()
+            return
+
+        ox, oy, img_w, img_h = tl
+
+        # cursor inside displayed image?
+        if not (ox <= event.x < ox + img_w and oy <= event.y < oy + img_h):
+            state["inspector_text"] = ""
+            update_status()
+            return
+
+        w, h = base_wh
+
+        # scaled pixel coordinates
+        xs = int(np.clip(event.x - ox, 0, img_w - 1))
+        ys = int(np.clip(event.y - oy, 0, img_h - 1))
+
+        # map to base coords (out)
+        x = int(np.clip(xs * (w / max(1, img_w)), 0, w - 1))
+        y = int(np.clip(ys * (h / max(1, img_h)), 0, h - 1))
+
+        px = out[y, x]
+        if out.ndim == 2:
+            val_txt = f"I={int(px)}"
+        else:
+            r, g, b = int(px[0]), int(px[1]), int(px[2])
+            val_txt = f"RGB=({r},{g},{b})"
+
+        # label from mask (mask stored in scaled coords)
+        lbl_txt = ""
+        m = state.get("last_mask_scaled")
+        if m is not None:
+            my = int(np.clip(ys, 0, m.shape[0] - 1))
+            mx = int(np.clip(xs, 0, m.shape[1] - 1))
+            lbl = int(m[my, mx])
+            if lbl != 0:
+                nm = (state.get("overlay_label_names") or {}).get(lbl)
+                lbl_txt = f"  |  Label={lbl}" + (f" ({nm})" if nm else "")
+
+        state["inspector_text"] = f"x={x}, y={y}  |  {val_txt}{lbl_txt}"
+        update_status()
+
+    def on_mouse_leave(_event):
+        state["inspector_text"] = ""
+        update_status()
+
+    # --------------------------------------------------------
     # Display helpers
     # --------------------------------------------------------
     def build_display_image():
         vol = state["volume"]
         if vol is None:
+            state["last_disp_out"] = None
+            state["last_disp_base_wh"] = None
+            state["last_disp_scaled_wh"] = None
+            state["last_mask_scaled"] = None
             return None
 
         ft = state["current_file_type"]
@@ -743,12 +971,17 @@ def create_viewer(file_paths, modality=""):
 
         out = np.clip(out, 0, 255).astype(np.uint8)
 
-        # Fit to available image_frame size
+        # Base dimensions must be defined BEFORE saving for inspector
         h, w = out.shape[:2]
+        state["last_disp_out"] = out
+        state["last_disp_base_wh"] = (w, h)
+
+        # Fit to available image_frame size
         fw = max(1, image_frame.winfo_width() - 10)
         fh = max(1, image_frame.winfo_height() - 10)
         scale = min(fw / w, fh / h) if fw > 1 and fh > 1 else 1.0
         new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+        state["last_disp_scaled_wh"] = (new_w, new_h)
 
         # Convert to PIL
         if out.ndim == 2:
@@ -758,6 +991,9 @@ def create_viewer(file_paths, modality=""):
 
         if (new_w, new_h) != (w, h):
             pil = pil.resize((new_w, new_h), Image.BILINEAR)
+
+        # Default: no mask scaled unless we set it below
+        state["last_mask_scaled"] = None
 
         # ---- Overlay ----
         if state["overlay_enabled"] and state["mask_volume"] is not None:
@@ -779,6 +1015,9 @@ def create_viewer(file_paths, modality=""):
             )
             m = overlay_utils.resize_mask_nearest(m, new_w, new_h)
             m = m.astype(np.int32)
+
+            # Save mask in display coordinates (for pixel inspector)
+            state["last_mask_scaled"] = m
 
             alpha = float(state.get("overlay_alpha", 35)) / 100.0
 
@@ -989,16 +1228,42 @@ def create_viewer(file_paths, modality=""):
     root.bind("<Right>", lambda e: _safe_change_file(+1))
     root.bind("<Up>", lambda e: _safe_change_z(+1))
     root.bind("<Down>", lambda e: _safe_change_z(-1))
-    root.bind("<Prior>", lambda e: _safe_change_t(+1))  # PageUp
-    root.bind("<Next>", lambda e: _safe_change_t(-1))  # PageDown
+    root.bind("<Prior>", lambda e: _safe_change_t(+1))   # PageUp
+    root.bind("<Next>", lambda e: _safe_change_t(-1))    # PageDown
 
     root.bind("o", lambda e: (overlay_var.set(not overlay_var.get()), toggle_overlay()))
     root.bind("r", lambda e: reset_view())
+    root.bind("p", lambda e: reset_preprocessing())
+    root.bind("e", lambda e: export_current_view())
 
     # Pan events on image
     image_label.bind("<Button-1>", on_left_down)
     image_label.bind("<B1-Motion>", on_left_drag)
     image_label.bind("<ButtonRelease-1>", on_left_up)
+
+    # Pixel inspector events
+    image_label.bind("<Motion>", on_mouse_move)
+    image_label.bind("<Leave>", on_mouse_leave)
+
+    # --------------------------------------------------------
+    # Hook up quick actions (must be after functions exist)
+    # --------------------------------------------------------
+    btn_q_reset_view.config(command=reset_view)
+    btn_q_reset_pre.config(command=reset_preprocessing)
+    btn_q_load_mask.config(command=load_mask_dialog)
+    btn_q_export.config(command=export_current_view)
+
+    def _quick_toggle_overlay():
+        overlay_var.set(not overlay_var.get())
+        toggle_overlay()
+
+    btn_q_toggle_overlay.config(command=_quick_toggle_overlay)
+
+    # --------------------------------------------------------
+    # Apply theme (keep image area black)
+    # --------------------------------------------------------
+    _safe_apply_viewer_theme(root, theme, exclude_widgets=[image_frame, image_label])
+    _safe_apply_viewer_theme(metadata_win, theme)
 
     # Init
     file_slider.set(0)
