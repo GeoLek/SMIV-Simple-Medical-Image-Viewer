@@ -12,6 +12,48 @@ import overlay_utils
 import ui_theme
 import json
 
+class CollapsibleSection(tk.Frame):
+    """
+    Simple collapsible section: header button + content frame.
+    Use .content to pack widgets inside.
+    """
+    def __init__(self, parent, title, theme=None, open_by_default=False):
+        super().__init__(parent, bg=(theme["bg"] if theme else None))
+
+        self._theme = theme
+        self._open = open_by_default
+
+        header_bg = theme["header"] if theme else None
+        header_fg = theme["header_text"] if theme else None
+
+        self._btn = tk.Button(
+            self,
+            text=("▾ " if self._open else "▸ ") + title,
+            anchor="w",
+            relief="flat",
+            bg=header_bg,
+            fg=header_fg,
+            activebackground=header_bg,
+            activeforeground=header_fg,
+            command=self.toggle,
+        )
+        self._btn.pack(fill=tk.X)
+
+        self.content = tk.Frame(self, bg=(theme["bg"] if theme else None))
+        if self._open:
+            self.content.pack(fill=tk.X, pady=(4, 8))
+
+    def toggle(self):
+        self._open = not self._open
+        txt = self._btn.cget("text")
+        title = txt[2:] if len(txt) > 2 else txt
+        self._btn.config(text=("▾ " if self._open else "▸ ") + title)
+
+        if self._open:
+            self.content.pack(fill=tk.X, pady=(4, 8))
+        else:
+            self.content.pack_forget()
+
 
 def create_viewer(file_paths, modality=""):
     """
@@ -101,9 +143,6 @@ def create_viewer(file_paths, modality=""):
 
     status_label = tk.Label(root, font=("Arial", 11), anchor="w")
     status_label.grid(row=2, column=0, sticky="ew", padx=10, pady=(4, 8))
-
-    # Apply theme to viewer (exclude the image area so it stays black)
-    ui_theme.apply_viewer_theme(root, exclude_widgets=[image_frame, image_label])
 
     # --------------------------------------------------------
     # Toolbox tabs
@@ -260,11 +299,20 @@ def create_viewer(file_paths, modality=""):
     overlay_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
     legend_label = tk.Label(overlay_frame, text="", justify="left", anchor="w")
-    legend_label.pack(fill=tk.X, pady=(0, 8))
+    legend_label.pack(fill=tk.X, pady=(0, 6))
 
     overlay_var = BooleanVar(value=False)
     alpha_var = IntVar(value=35)
     outline_var = BooleanVar(value=False)
+
+    # Search var must exist before rebuild_label_checkboxes() uses it
+    label_search_var = tk.StringVar(value="")
+
+    label_vars = {}  # lbl -> BooleanVar (UI)
+    labels_outer = None
+    labels_canvas = None
+    labels_scroll = None
+    labels_frame = None
 
     def refresh_legend():
         lc = state.get("overlay_label_colors") or {}
@@ -275,18 +323,19 @@ def create_viewer(file_paths, modality=""):
             return
 
         if len(lc) == 0:
-            legend_label.config(text="Overlay labels: (binary)")
+            legend_label.config(text="Overlay: binary")
             return
 
-        lines = ["Overlay labels:"]
-        for lbl, col in sorted(lc.items()):
+        # keep legend short
+        items = []
+        for lbl in sorted(lc.keys()):
             lbl_i = int(lbl)
-            name = names.get(lbl_i)
-            if name:
-                lines.append(f"  Label {lbl_i} ({name}): RGB{tuple(col)}")
-            else:
-                lines.append(f"  Label {lbl_i}: RGB{tuple(col)}")
-        legend_label.config(text="\n".join(lines))
+            nm = names.get(lbl_i)
+            items.append(f"{lbl_i}:{nm}" if nm else f"{lbl_i}")
+            if len(items) >= 6:
+                break
+        more = f" (+{len(lc) - 6} more)" if len(lc) > 6 else ""
+        legend_label.config(text="Overlay labels: " + ", ".join(items) + more)
 
     def toggle_overlay():
         state["overlay_enabled"] = overlay_var.get()
@@ -303,54 +352,39 @@ def create_viewer(file_paths, modality=""):
         state["overlay_outline"] = outline_var.get()
         display_current_slice()
 
-    # Label visibility UI (scrollable list inside overlay tab)
-    labels_outer = tk.Frame(overlay_frame, bg=ui_theme.THEME["bg"])
-    labels_outer.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
-
-    labels_canvas = tk.Canvas(labels_outer, highlightthickness=0)
-    labels_scroll = tk.Scrollbar(labels_outer, orient=tk.VERTICAL, command=labels_canvas.yview)
-    labels_canvas.configure(yscrollcommand=labels_scroll.set)
-
-    labels_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-    labels_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    labels_frame = tk.Frame(labels_canvas, bg=ui_theme.THEME["bg"])
-    labels_canvas.create_window((0, 0), window=labels_frame, anchor="nw")
-
     def _sync_labels_scrollregion(_event=None):
+        if labels_canvas is None:
+            return
         labels_canvas.configure(scrollregion=labels_canvas.bbox("all"))
 
-    labels_frame.bind("<Configure>", _sync_labels_scrollregion)
-
     def _labels_mousewheel(event):
-        # Windows/macOS delta
+        if labels_canvas is None:
+            return
         if hasattr(event, "delta") and event.delta:
             labels_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         else:
-            # Linux Button-4/5
             if event.num == 4:
                 labels_canvas.yview_scroll(-3, "units")
             elif event.num == 5:
                 labels_canvas.yview_scroll(3, "units")
 
     def _bind_labels_wheel(_e=None):
+        if labels_canvas is None:
+            return
         labels_canvas.bind_all("<MouseWheel>", _labels_mousewheel)
         labels_canvas.bind_all("<Button-4>", _labels_mousewheel)
         labels_canvas.bind_all("<Button-5>", _labels_mousewheel)
 
     def _unbind_labels_wheel(_e=None):
+        if labels_canvas is None:
+            return
         labels_canvas.unbind_all("<MouseWheel>")
         labels_canvas.unbind_all("<Button-4>")
         labels_canvas.unbind_all("<Button-5>")
 
-    labels_canvas.bind("<Enter>", _bind_labels_wheel)
-    labels_canvas.bind("<Leave>", _unbind_labels_wheel)
-
-    label_vars = {}  # local dict: lbl -> BooleanVar
-
     def on_label_visibility_change(lbl_i):
         vis = state.get("overlay_label_visible") or {}
-        v = label_vars.get(lbl_i)
+        v = label_vars.get(int(lbl_i))
         if v is None:
             return
         vis[int(lbl_i)] = bool(v.get())
@@ -358,6 +392,9 @@ def create_viewer(file_paths, modality=""):
         display_current_slice()
 
     def rebuild_label_checkboxes():
+        if labels_frame is None:
+            return
+
         for w in labels_frame.winfo_children():
             w.destroy()
         label_vars.clear()
@@ -365,33 +402,61 @@ def create_viewer(file_paths, modality=""):
         lc = state.get("overlay_label_colors") or {}
         vis = state.get("overlay_label_visible") or {}
         names = state.get("overlay_label_names") or {}
-
         if len(lc) == 0:
+            _sync_labels_scrollregion()
             return
 
-        tk.Label(labels_frame, text="Visible labels:", anchor="w").pack(anchor="w")
+        q = (label_search_var.get() or "").strip().lower()
+
+        tk.Label(labels_frame, text="Visible labels:", anchor="w",
+                 bg=ui_theme.THEME["bg"], fg=ui_theme.THEME["text"]).pack(anchor="w", pady=(0, 4))
 
         for lbl in sorted(lc.keys()):
             lbl_i = int(lbl)
+            name = names.get(lbl_i, "")
+            txt = f"Label {lbl_i}" + (f" ({name})" if name else "")
+
+            if q:
+                if q not in str(lbl_i) and q not in name.lower():
+                    continue
+
             v = BooleanVar(value=bool(vis.get(lbl_i, True)))
             label_vars[lbl_i] = v
-
-            name = names.get(lbl_i)
-            if name:
-                txt = f"Label {lbl_i} ({name})"
-            else:
-                txt = f"Label {lbl_i}"
 
             cb = Checkbutton(
                 labels_frame,
                 text=txt,
                 variable=v,
-                command=(lambda lid=lbl_i: on_label_visibility_change(lid))
+                command=(lambda lid=lbl_i: on_label_visibility_change(lid)),
+                bg=ui_theme.THEME["bg"],
+                fg=ui_theme.THEME["text"],
+                activebackground=ui_theme.THEME["bg"],
+                selectcolor=ui_theme.THEME["bg"],
             )
             cb.pack(anchor="w")
 
-        ui_theme.apply_viewer_theme(root, exclude_widgets=[image_frame, image_label])
         _sync_labels_scrollregion()
+
+    def _on_search_changed(*_args):
+        rebuild_label_checkboxes()
+
+    label_search_var.trace_add("write", _on_search_changed)
+
+    def set_all_labels(val: bool):
+        vis = state.get("overlay_label_visible") or {}
+        for k in list(vis.keys()):
+            vis[int(k)] = bool(val)
+        state["overlay_label_visible"] = vis
+        rebuild_label_checkboxes()
+        display_current_slice()
+
+    def invert_labels():
+        vis = state.get("overlay_label_visible") or {}
+        for k in list(vis.keys()):
+            vis[int(k)] = not bool(vis[int(k)])
+        state["overlay_label_visible"] = vis
+        rebuild_label_checkboxes()
+        display_current_slice()
 
     def load_mask_dialog():
         mask_path = filedialog.askopenfilename(
@@ -414,20 +479,18 @@ def create_viewer(file_paths, modality=""):
         state["mask_path"] = mask_path
         state["mask_volume"] = m
         state["overlay_enabled"] = True
-        state["overlay_warned_mismatch"] = False  # reset warning per mask
+        state["overlay_warned_mismatch"] = False
 
         state["overlay_label_colors"] = overlay_utils.default_label_colormap(m)
         lc = state["overlay_label_colors"] or {}
         state["overlay_label_visible"] = {int(lbl): True for lbl in lc.keys()}
 
-        # Auto-load sidecar label names (optional)
         state["overlay_label_names"] = overlay_utils.load_label_names_for_mask(mask_path)
 
         overlay_var.set(True)
         alpha_var.set(state["overlay_alpha"])
         outline_var.set(state["overlay_outline"])
 
-        messagebox.showinfo("Load Mask", f"Mask loaded:\n{os.path.basename(mask_path)}")
         refresh_legend()
         rebuild_label_checkboxes()
         display_current_slice()
@@ -445,12 +508,6 @@ def create_viewer(file_paths, modality=""):
         display_current_slice()
 
     def load_labelmap_dialog():
-        """
-        Load a label-map JSON file mapping label integers to names.
-        Supported JSON formats:
-          A) {"1": "liver", "2": "pancreas"}
-          B) {"labels": {"1": "liver", "2": "pancreas"}}
-        """
         path = filedialog.askopenfilename(
             title="Select label-map JSON",
             initialdir=".",
@@ -479,7 +536,6 @@ def create_viewer(file_paths, modality=""):
                     out[kk] = v.strip()
 
             state["overlay_label_names"] = out
-            messagebox.showinfo("Label-map", f"Loaded {len(out)} label names.")
             refresh_legend()
             rebuild_label_checkboxes()
             display_current_slice()
@@ -487,34 +543,86 @@ def create_viewer(file_paths, modality=""):
         except Exception as e:
             messagebox.showerror("Label-map", f"Failed to load label-map:\n{e}")
 
-    # Overlay controls (top of overlay tab)
-    tk.Button(overlay_frame, text="Load Mask", command=load_mask_dialog).pack(anchor="w")
-    tk.Button(overlay_frame, text="Clear Mask", command=clear_mask).pack(anchor="w", pady=(2, 8))
-    tk.Button(overlay_frame, text="Load Label-Map (JSON)", command=load_labelmap_dialog).pack(anchor="w", pady=(0, 8))
+    # -------- UI (AFTER functions exist) --------
+    sec_mask = CollapsibleSection(overlay_frame, "Mask", theme=ui_theme.THEME, open_by_default=True)
+    sec_mask.pack(fill=tk.X, pady=(4, 6))
+
+    sec_appearance = CollapsibleSection(overlay_frame, "Appearance", theme=ui_theme.THEME, open_by_default=False)
+    sec_appearance.pack(fill=tk.X, pady=(4, 6))
+
+    sec_labels = CollapsibleSection(overlay_frame, "Labels", theme=ui_theme.THEME, open_by_default=True)
+    sec_labels.pack(fill=tk.BOTH, expand=True, pady=(4, 6))
+
+    # Mask section
+    tk.Button(sec_mask.content, text="Load Mask", command=load_mask_dialog).pack(anchor="w")
+    tk.Button(sec_mask.content, text="Clear Mask", command=clear_mask).pack(anchor="w", pady=(2, 6))
+    tk.Button(sec_mask.content, text="Load Label-Map (JSON)", command=load_labelmap_dialog).pack(anchor="w")
 
     Checkbutton(
-        overlay_frame,
+        sec_mask.content,
         text="Show Segmentation Overlay",
         variable=overlay_var,
-        command=toggle_overlay
-    ).pack(anchor="w")
+        command=toggle_overlay,
+        bg=ui_theme.THEME["bg"],
+        fg=ui_theme.THEME["text"],
+        activebackground=ui_theme.THEME["bg"],
+        selectcolor=ui_theme.THEME["bg"],
+    ).pack(anchor="w", pady=(8, 0))
 
+    # Appearance section
     Checkbutton(
-        overlay_frame,
+        sec_appearance.content,
         text="Overlay Outline Only",
         variable=outline_var,
-        command=toggle_outline
-    ).pack(anchor="w", pady=(2, 6))
+        command=toggle_outline,
+        bg=ui_theme.THEME["bg"],
+        fg=ui_theme.THEME["text"],
+        activebackground=ui_theme.THEME["bg"],
+        selectcolor=ui_theme.THEME["bg"],
+    ).pack(anchor="w")
 
     Scale(
-        overlay_frame,
+        sec_appearance.content,
         from_=0,
         to=100,
         label="Overlay Alpha (%)",
         variable=alpha_var,
         orient=tk.HORIZONTAL,
         command=on_alpha_change
-    ).pack(fill=tk.X, pady=(0, 8))
+    ).pack(fill=tk.X, pady=(4, 0))
+
+    # Labels section: search + bulk actions + scrollable list
+    search_row = tk.Frame(sec_labels.content, bg=ui_theme.THEME["bg"])
+    search_row.pack(fill=tk.X, pady=(0, 6))
+    tk.Label(search_row, text="Search:", bg=ui_theme.THEME["bg"], fg=ui_theme.THEME["text"]).pack(side=tk.LEFT)
+    ttk.Entry(search_row, textvariable=label_search_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
+
+    actions_row = tk.Frame(sec_labels.content, bg=ui_theme.THEME["bg"])
+    actions_row.pack(fill=tk.X, pady=(0, 6))
+    tk.Button(actions_row, text="All", command=lambda: set_all_labels(True)).pack(side=tk.LEFT, padx=(0, 6))
+    tk.Button(actions_row, text="None", command=lambda: set_all_labels(False)).pack(side=tk.LEFT, padx=(0, 6))
+    tk.Button(actions_row, text="Invert", command=invert_labels).pack(side=tk.LEFT)
+
+    labels_outer = tk.Frame(sec_labels.content, bg=ui_theme.THEME["bg"])
+    labels_outer.pack(fill=tk.BOTH, expand=True)
+
+    labels_canvas = tk.Canvas(labels_outer, highlightthickness=0, bg=ui_theme.THEME["bg"])
+    labels_scroll = tk.Scrollbar(labels_outer, orient=tk.VERTICAL, command=labels_canvas.yview)
+    labels_canvas.configure(yscrollcommand=labels_scroll.set)
+
+    labels_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+    labels_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    labels_frame = tk.Frame(labels_canvas, bg=ui_theme.THEME["bg"])
+    labels_canvas.create_window((0, 0), window=labels_frame, anchor="nw")
+
+    labels_frame.bind("<Configure>", _sync_labels_scrollregion)
+    labels_canvas.bind("<Enter>", _bind_labels_wheel)
+    labels_canvas.bind("<Leave>", _unbind_labels_wheel)
+
+    # Initial UI state
+    refresh_legend()
+    rebuild_label_checkboxes()
 
     # --------------------------------------------------------
     # Metadata window
@@ -857,6 +965,35 @@ def create_viewer(file_paths, modality=""):
     root.bind("<MouseWheel>", on_mouse_wheel)
     root.bind("<Button-4>", lambda e: scroll_zoom(+1))
     root.bind("<Button-5>", lambda e: scroll_zoom(-1))
+
+    def _safe_change_file(delta):
+        if len(file_paths) <= 1:
+            return
+        change_file(delta)
+
+    def _safe_change_z(delta):
+        if state.get("z_max", 1) <= 1:
+            return
+        state["z_index"] = int(np.clip(state["z_index"] + delta, 0, state["z_max"] - 1))
+        z_slider.set(state["z_index"])
+        display_current_slice()
+
+    def _safe_change_t(delta):
+        if state.get("t_max", 1) <= 1:
+            return
+        state["t_index"] = int(np.clip(state["t_index"] + delta, 0, state["t_max"] - 1))
+        t_slider.set(state["t_index"])
+        display_current_slice()
+
+    root.bind("<Left>", lambda e: _safe_change_file(-1))
+    root.bind("<Right>", lambda e: _safe_change_file(+1))
+    root.bind("<Up>", lambda e: _safe_change_z(+1))
+    root.bind("<Down>", lambda e: _safe_change_z(-1))
+    root.bind("<Prior>", lambda e: _safe_change_t(+1))  # PageUp
+    root.bind("<Next>", lambda e: _safe_change_t(-1))  # PageDown
+
+    root.bind("o", lambda e: (overlay_var.set(not overlay_var.get()), toggle_overlay()))
+    root.bind("r", lambda e: reset_view())
 
     # Pan events on image
     image_label.bind("<Button-1>", on_left_down)
