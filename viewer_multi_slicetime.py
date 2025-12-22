@@ -71,17 +71,52 @@ def create_viewer(file_paths, modality=""):
     }
 
     # --------------------------------------------------------
-    # UI Layout
+    # Main split UI: Left (Image) | Right (Controls)
     # --------------------------------------------------------
     info_label = tk.Label(root, font=("Arial", 14))
     info_label.pack(side=tk.TOP, pady=5)
 
-    # Frame that will hold the image and expand with the window
-    image_frame = tk.Frame(root, bg="black")
+
+    main_pane = ttk.Panedwindow(root, orient=tk.HORIZONTAL)
+    main_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    # Left pane: image area
+    left_pane = tk.Frame(main_pane, bg="black")
+    main_pane.add(left_pane, weight=4)
+
+    image_frame = tk.Frame(left_pane, bg="black")
     image_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
     image_label = tk.Label(image_frame, bg="black")
     image_label.pack(expand=True)
+
+    # Right pane: scrollable controls area
+    right_pane = tk.Frame(main_pane)
+    main_pane.add(right_pane, weight=1)
+
+    right_pane.grid_rowconfigure(0, weight=1)
+    right_pane.grid_columnconfigure(0, weight=1)
+
+    controls_canvas = tk.Canvas(right_pane, highlightthickness=0)
+    controls_canvas.grid(row=0, column=0, sticky="nsew")
+
+    controls_scroll = ttk.Scrollbar(right_pane, orient="vertical", command=controls_canvas.yview)
+    controls_scroll.grid(row=0, column=1, sticky="ns")
+
+    controls_canvas.configure(yscrollcommand=controls_scroll.set)
+
+    controls_inner = tk.Frame(controls_canvas)
+    controls_window_id = controls_canvas.create_window((0, 0), window=controls_inner, anchor="nw")
+
+    def _controls_on_configure(event):
+        controls_canvas.configure(scrollregion=controls_canvas.bbox("all"))
+
+    def _canvas_on_configure(event):
+        # Make inner frame match canvas width so widgets don't get cut off
+        controls_canvas.itemconfig(controls_window_id, width=event.width)
+
+    controls_inner.bind("<Configure>", _controls_on_configure)
+    controls_canvas.bind("<Configure>", _canvas_on_configure)
 
     # --- File navigation (Prev / Next + file slider)
     nav_frame = tk.Frame(root)
@@ -140,8 +175,8 @@ def create_viewer(file_paths, modality=""):
     file_slider.pack(fill=tk.X, padx=10)
 
     # --- Z/T sliders
-    z_slider = ttk.Scale(root, from_=0, to=0, orient="horizontal")
-    t_slider = ttk.Scale(root, from_=0, to=0, orient="horizontal")
+    z_slider = ttk.Scale(controls_inner, from_=0, to=0, orient="horizontal")
+    t_slider = ttk.Scale(controls_inner, from_=0, to=0, orient="horizontal")
 
     def on_z_change(val):
         state["z_index"] = int(float(val))
@@ -155,7 +190,7 @@ def create_viewer(file_paths, modality=""):
     t_slider.config(command=on_t_change)
 
     # --- Preprocessing controls
-    preproc_frame = tk.Frame(root)
+    preproc_frame = tk.Frame(controls_inner)
     preproc_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
     legend_label = tk.Label(preproc_frame, text="", justify="left", anchor="w")
     legend_label.pack(fill=tk.X)
