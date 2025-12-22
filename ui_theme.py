@@ -1,5 +1,8 @@
 # ui_theme.py
+
 import tkinter as tk
+from tkinter import ttk
+
 # Dark Theme Colors
 THEME = {
     "bg": "#2B3A42",  # Steel Blue-Gray
@@ -70,3 +73,88 @@ def setup_ui(root, select_modality):
 
     # Apply Initial Theme
     apply_theme(root, buttons, header_frame, header_label, info_label)
+
+def apply_viewer_theme(root, exclude_widgets=None):
+    """
+    Apply the same theme to the viewer window (Toplevel) as the main menu.
+
+    exclude_widgets: optional list of widget objects to skip (e.g., image_frame/image_label)
+    """
+    exclude = set(exclude_widgets or [])
+
+    # ttk styling (Notebook, etc.)
+    try:
+        style = ttk.Style(root)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        style.configure("TFrame", background=THEME["bg"])
+        style.configure("TLabel", background=THEME["bg"], foreground=THEME["text"])
+        style.configure("TNotebook", background=THEME["bg"])
+        style.configure("TNotebook.Tab", background=THEME["header"], foreground=THEME["header_text"])
+        style.map("TNotebook.Tab", background=[("selected", THEME["button"])])
+    except Exception:
+        pass
+
+    def _apply(w):
+        if w in exclude:
+            return
+
+        # Root and containers
+        if isinstance(w, (tk.Tk, tk.Toplevel, tk.Frame)):
+            try:
+                w.configure(bg=THEME["bg"])
+            except Exception:
+                pass
+
+        # Labels
+        if isinstance(w, tk.Label):
+            try:
+                w.configure(bg=THEME["bg"], fg=THEME["text"])
+            except Exception:
+                pass
+
+        # Buttons
+        if isinstance(w, tk.Button):
+            try:
+                w.configure(
+                    bg=THEME["button"],
+                    fg=THEME["text"],
+                    activebackground=THEME["button_hover"],
+                    activeforeground="black",
+                )
+            except Exception:
+                pass
+
+        # Checkbuttons
+        if isinstance(w, tk.Checkbutton):
+            try:
+                w.configure(
+                    bg=THEME["bg"],
+                    fg=THEME["text"],
+                    activebackground=THEME["bg"],
+                    selectcolor=THEME["bg"],
+                )
+            except Exception:
+                pass
+
+        # Scales
+        if isinstance(w, tk.Scale):
+            try:
+                w.configure(bg=THEME["bg"], fg=THEME["text"], troughcolor=THEME["button"])
+            except Exception:
+                pass
+
+        # Canvas
+        if isinstance(w, tk.Canvas):
+            try:
+                w.configure(bg=THEME["bg"], highlightthickness=0)
+            except Exception:
+                pass
+
+        for c in w.winfo_children():
+            _apply(c)
+
+    _apply(root)
