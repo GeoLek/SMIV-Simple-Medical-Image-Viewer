@@ -1,7 +1,5 @@
 # viewer_multi_slicetime.py
 
-# viewer_multi_slicetime.py
-
 import os
 import tkinter as tk
 from tkinter import ttk, BooleanVar, IntVar, Checkbutton, Scale, filedialog, messagebox
@@ -121,7 +119,6 @@ def _safe_apply_viewer_theme(root, theme, exclude_widgets=None):
         for child in w.winfo_children():
             _apply_to_widget(child)
 
-    # Root background
     try:
         root.configure(bg=theme["bg"])
     except Exception:
@@ -150,7 +147,7 @@ def create_viewer(file_paths, modality=""):
       - UI: PanedWindow (image left, toolbox right) + toolbox tabs
       - Pixel inspector (hover) in status bar
       - Reset preprocessing button
-      - Quick actions bar
+      - Quick actions bar (BOTTOM-RIGHT)
     """
 
     root = tk.Toplevel()
@@ -217,25 +214,13 @@ def create_viewer(file_paths, modality=""):
     root.grid_rowconfigure(1, weight=1)
     root.grid_columnconfigure(0, weight=1)
 
-    # Header row: info label + quick actions
+    # Header row: info label only (NO buttons top-right)
     header_row = tk.Frame(root)
     header_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 4))
     header_row.grid_columnconfigure(0, weight=1)
 
     info_label = tk.Label(header_row, font=("Arial", 14), anchor="w")
     info_label.grid(row=0, column=0, sticky="ew")
-
-    quick_bar = tk.Frame(header_row)
-    quick_bar.grid(row=0, column=1, sticky="e", padx=(10, 0))
-
-    btn_q_reset_view = tk.Button(quick_bar, text="Reset View")
-    btn_q_reset_pre = tk.Button(quick_bar, text="Reset Preproc")
-    btn_q_load_mask = tk.Button(quick_bar, text="Load Mask")
-    btn_q_toggle_overlay = tk.Button(quick_bar, text="Overlay On/Off")
-    btn_q_export = tk.Button(quick_bar, text="Export PNG")
-
-    for b in (btn_q_reset_view, btn_q_reset_pre, btn_q_load_mask, btn_q_toggle_overlay, btn_q_export):
-        b.pack(side=tk.LEFT, padx=4)
 
     main_pane = ttk.Panedwindow(root, orient=tk.HORIZONTAL)
     main_pane.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
@@ -253,8 +238,23 @@ def create_viewer(file_paths, modality=""):
     main_pane.add(image_frame, weight=3)
     main_pane.add(toolbox_frame, weight=1)
 
-    status_label = tk.Label(root, font=("Arial", 11), anchor="w")
-    status_label.grid(row=2, column=0, sticky="ew", padx=10, pady=(4, 8))
+    # --- Status bar row (left status text + right Quick Actions) ---
+    status_bar = tk.Frame(root)
+    status_bar.grid(row=2, column=0, sticky="ew", padx=10, pady=(4, 8))
+    status_bar.grid_columnconfigure(0, weight=1)  # status expands left
+
+    status_label = tk.Label(status_bar, anchor="w")
+    status_label.grid(row=0, column=0, sticky="ew")
+
+    quick_actions = tk.Frame(status_bar)
+    quick_actions.grid(row=0, column=1, sticky="e")
+
+    # Placeholders (created later after functions exist)
+    btn_qa_reset_view = None
+    btn_qa_reset_preproc = None
+    btn_qa_load_mask = None
+    btn_qa_toggle_overlay = None
+    btn_qa_export = None
 
     # --------------------------------------------------------
     # Toolbox tabs
@@ -273,6 +273,9 @@ def create_viewer(file_paths, modality=""):
     tab_nav.configure(bg=theme["bg"])
     tab_preproc.configure(bg=theme["bg"])
     tab_overlay.configure(bg=theme["bg"])
+
+    def _confirm(title: str, msg: str) -> bool:
+        return messagebox.askyesno(title, msg, parent=root)
 
     # --------------------------------------------------------
     # NAV TAB: file navigation + sliders + zoom
@@ -330,9 +333,13 @@ def create_viewer(file_paths, modality=""):
         state["zoom_factor"] = 1.0
         display_current_slice()
 
-    tk.Button(tab_nav, text="Reset Zoom/Pan", command=reset_view).pack(anchor="w", padx=10, pady=(0, 10))
+    def confirm_reset_view():
+        if _confirm("Reset View", "Reset zoom and pan?"):
+            reset_view()
 
-    # Export button (Navigation tab feels right)
+    tk.Button(tab_nav, text="Reset Zoom/Pan", command=confirm_reset_view).pack(anchor="w", padx=10, pady=(0, 10))
+
+    # Export button (Navigation tab)
     def export_current_view():
         tk_img = getattr(image_label, "image", None)
         if tk_img is None:
@@ -427,7 +434,11 @@ def create_viewer(file_paths, modality=""):
         settings["contrast"].set(1)
         display_current_slice()
 
-    tk.Button(preproc_frame, text="Reset Preprocessing", command=reset_preprocessing).pack(
+    def confirm_reset_preprocessing():
+        if _confirm("Reset Preprocessing", "Reset preprocessing settings to defaults?"):
+            reset_preprocessing()
+
+    tk.Button(preproc_frame, text="Reset Preprocessing", command=confirm_reset_preprocessing).pack(
         anchor="w", pady=(10, 0)
     )
 
@@ -465,7 +476,6 @@ def create_viewer(file_paths, modality=""):
             legend_label.config(text="Overlay: binary")
             return
 
-        # keep legend short
         items = []
         for lbl in sorted(lc.keys()):
             lbl_i = int(lbl)
@@ -651,6 +661,10 @@ def create_viewer(file_paths, modality=""):
         rebuild_label_checkboxes()
         display_current_slice()
 
+    def confirm_clear_mask():
+        if _confirm("Clear Mask", "Clear the loaded mask and overlay settings?"):
+            clear_mask()
+
     def load_labelmap_dialog():
         path = filedialog.askopenfilename(
             title="Select label-map JSON",
@@ -699,7 +713,7 @@ def create_viewer(file_paths, modality=""):
 
     # Mask section
     tk.Button(sec_mask.content, text="Load Mask", command=load_mask_dialog).pack(anchor="w")
-    tk.Button(sec_mask.content, text="Clear Mask", command=clear_mask).pack(anchor="w", pady=(2, 6))
+    tk.Button(sec_mask.content, text="Clear Mask", command=confirm_clear_mask).pack(anchor="w", pady=(2, 6))
     tk.Button(sec_mask.content, text="Load Label-Map (JSON)", command=load_labelmap_dialog).pack(anchor="w")
 
     Checkbutton(
@@ -888,7 +902,6 @@ def create_viewer(file_paths, modality=""):
 
         ox, oy, img_w, img_h = tl
 
-        # cursor inside displayed image?
         if not (ox <= event.x < ox + img_w and oy <= event.y < oy + img_h):
             state["inspector_text"] = ""
             update_status()
@@ -896,11 +909,9 @@ def create_viewer(file_paths, modality=""):
 
         w, h = base_wh
 
-        # scaled pixel coordinates
         xs = int(np.clip(event.x - ox, 0, img_w - 1))
         ys = int(np.clip(event.y - oy, 0, img_h - 1))
 
-        # map to base coords (out)
         x = int(np.clip(xs * (w / max(1, img_w)), 0, w - 1))
         y = int(np.clip(ys * (h / max(1, img_h)), 0, h - 1))
 
@@ -911,7 +922,6 @@ def create_viewer(file_paths, modality=""):
             r, g, b = int(px[0]), int(px[1]), int(px[2])
             val_txt = f"RGB=({r},{g},{b})"
 
-        # label from mask (mask stored in scaled coords)
         lbl_txt = ""
         m = state.get("last_mask_scaled")
         if m is not None:
@@ -971,19 +981,16 @@ def create_viewer(file_paths, modality=""):
 
         out = np.clip(out, 0, 255).astype(np.uint8)
 
-        # Base dimensions must be defined BEFORE saving for inspector
         h, w = out.shape[:2]
         state["last_disp_out"] = out
         state["last_disp_base_wh"] = (w, h)
 
-        # Fit to available image_frame size
         fw = max(1, image_frame.winfo_width() - 10)
         fh = max(1, image_frame.winfo_height() - 10)
         scale = min(fw / w, fh / h) if fw > 1 and fh > 1 else 1.0
         new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
         state["last_disp_scaled_wh"] = (new_w, new_h)
 
-        # Convert to PIL
         if out.ndim == 2:
             pil = Image.fromarray(out, "L")
         else:
@@ -992,10 +999,8 @@ def create_viewer(file_paths, modality=""):
         if (new_w, new_h) != (w, h):
             pil = pil.resize((new_w, new_h), Image.BILINEAR)
 
-        # Default: no mask scaled unless we set it below
         state["last_mask_scaled"] = None
 
-        # ---- Overlay ----
         if state["overlay_enabled"] and state["mask_volume"] is not None:
             m = overlay_utils.get_mask_slice(
                 state["mask_volume"], state["z_index"], state["t_index"]
@@ -1016,7 +1021,6 @@ def create_viewer(file_paths, modality=""):
             m = overlay_utils.resize_mask_nearest(m, new_w, new_h)
             m = m.astype(np.int32)
 
-            # Save mask in display coordinates (for pixel inspector)
             state["last_mask_scaled"] = m
 
             alpha = float(state.get("overlay_alpha", 35)) / 100.0
@@ -1025,7 +1029,6 @@ def create_viewer(file_paths, modality=""):
                 m_bin = overlay_utils.to_binary_mask(m)
                 pil = overlay_utils.apply_overlay_to_pil(pil, m_bin, alpha)
             else:
-                # Safe call: if your overlay_utils supports label_visible, use it; else fallback.
                 try:
                     pil = overlay_utils.apply_multiclass_overlay_to_pil(
                         pil, m,
@@ -1107,7 +1110,6 @@ def create_viewer(file_paths, modality=""):
         elif file_type == "WHOLESLIDE":
             arr = image_loader.load_whole_slide_downsampled(path)
 
-        # Store volume properly
         if arr is None:
             state["volume"] = None
         else:
@@ -1118,16 +1120,14 @@ def create_viewer(file_paths, modality=""):
             )
 
             if is_rgb_2d:
-                state["volume"] = arr  # (H, W, 3)
+                state["volume"] = arr
             else:
-                # force to 4D (H,W,Z,T)
                 if arr.ndim == 2:
                     arr = arr[..., np.newaxis, np.newaxis]
                 elif arr.ndim == 3:
                     arr = arr[..., np.newaxis]
                 state["volume"] = arr
 
-        # Configure sliders
         if state["volume"] is None:
             state["z_max"] = 1
             state["t_max"] = 1
@@ -1172,14 +1172,13 @@ def create_viewer(file_paths, modality=""):
                 else:
                     t_slider.pack_forget()
 
-        # Reset zoom/pan on file change
         state["zoom_factor"] = 1.0
         state["pan_x"] = 0.0
         state["pan_y"] = 0.0
 
         display_current_slice()
 
-    # Throttle resize-triggered redraws to avoid flicker & callback storms
+    # Throttle resize-triggered redraws
     resize_pending = {"flag": False}
 
     def on_root_resize(event):
@@ -1246,18 +1245,20 @@ def create_viewer(file_paths, modality=""):
     image_label.bind("<Leave>", on_mouse_leave)
 
     # --------------------------------------------------------
-    # Hook up quick actions (must be after functions exist)
+    # Build Quick Actions (BOTTOM-RIGHT) - ALL FIVE HERE
     # --------------------------------------------------------
-    btn_q_reset_view.config(command=reset_view)
-    btn_q_reset_pre.config(command=reset_preprocessing)
-    btn_q_load_mask.config(command=load_mask_dialog)
-    btn_q_export.config(command=export_current_view)
-
-    def _quick_toggle_overlay():
+    def _qa_toggle_overlay():
         overlay_var.set(not overlay_var.get())
         toggle_overlay()
 
-    btn_q_toggle_overlay.config(command=_quick_toggle_overlay)
+    btn_qa_reset_view = tk.Button(quick_actions, text="Reset View", command=confirm_reset_view)
+    btn_qa_reset_preproc = tk.Button(quick_actions, text="Reset Preproc", command=confirm_reset_preprocessing)
+    btn_qa_load_mask = tk.Button(quick_actions, text="Load Mask", command=load_mask_dialog)
+    btn_qa_toggle_overlay = tk.Button(quick_actions, text="Overlay On/Off", command=_qa_toggle_overlay)
+    btn_qa_export = tk.Button(quick_actions, text="Export PNG", command=export_current_view)
+
+    for b in (btn_qa_reset_view, btn_qa_reset_preproc, btn_qa_load_mask, btn_qa_toggle_overlay, btn_qa_export):
+        b.pack(side=tk.LEFT, padx=4)
 
     # --------------------------------------------------------
     # Apply theme (keep image area black)
