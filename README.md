@@ -1,17 +1,30 @@
 # SMIV: Simple Medical Image Viewer
 
-SMIV is a lightweight, cross-platform medical image viewer supporting:
-- **DICOM** (with or without `.dcm` extension),
-- **NIfTI** (`.nii`, `.nii.gz`),
-- **PNG/JPG** for 2D images,
-- **TIFF/Whole‐Slide Imaging (WSI)** for `.svs/.tiff/.ndpi/.scn` (using OpenSlide),
-- **Multi-slice/time** navigation (3D/4D volumes),
-- **Preprocessing** (histogram equalization, brightness/contrast, colormap),
-- **Zoom** (mouse-wheel) and **Pan** (left-drag),
-- **Multi-file scanning** in a single directory,
-- **Automatic detection** of file formats (even if they have no extension).
+SMIV is a lightweight, cross-platform medical image viewer designed for quickly browsing heterogeneous medical imaging studies and research datasets. It supports:
 
-It's written in Python using **Tkinter** for the GUI, **Pillow/numpy/opencv** for image processing, and **OpenSlide** (optional) to handle `.svs` and other large pathology slides.
+- **DICOM** (with or without `.dcm` extension),
+- **NIfTI** (`.nii`, `.nii.gz`) including 3D/4D volumes,
+- **PNG/JPG** for 2D images,
+- **TIFF** for standard 2D images,
+- **Whole-Slide Imaging (WSI)** formats like `.svs/.ndpi/.scn/.mrxs` (via **OpenSlide**, optional),
+- **Multi-file directory scanning** (browse all recognized images in the same folder),
+- **Automatic format detection** (even when files have no extension),
+- **Multi-slice/time navigation** for 3D/4D datasets,
+- **Preprocessing controls** (histogram equalization, brightness/contrast, colormap),
+- **Interactive viewing** with **Zoom** (mouse wheel) and **Pan** (left-drag),
+- **Segmentation overlay support** (binary + multi-class), including:
+  - **Load/Clear mask** (NIfTI / PNG / TIFF / NPY),
+  - **Per-label color mapping** (auto-generated),
+  - **Per-label visibility toggles** (show/hide selected labels),
+  - **Label names support** (auto-load sidecar JSON or manual label-map JSON),
+  - **Mask/image mismatch warning** (warn once per loaded mask),
+  - **Outline-only overlay mode** (optional),
+- **Pixel Inspector** (hover to read pixel intensity/RGB and, if present, mask label + label name),
+- **Improved UI layout**: split view with a **resizable PanedWindow** (image on the left, toolbox on the right),
+- **Toolbox tabs** for clarity: **Navigation**, **Preprocessing**, **Overlay**,
+- **Quick Actions bar** at the **bottom-right** for safe, frequent actions (with confirmation prompts).
+
+SMIV is written in Python using **Tkinter** for the GUI, **Pillow / NumPy / OpenCV** for image handling and overlays, **NiBabel** for NIfTI, **pydicom** for DICOM, and **OpenSlide** (optional) for WSI.
 
 ---
 
@@ -19,21 +32,33 @@ It's written in Python using **Tkinter** for the GUI, **Pillow/numpy/opencv** fo
 
 1. **DICOM** reading with or without `.dcm` (using `pydicom`).
 2. **NIfTI** reading for 3D/4D volumes (via `nibabel`).
-3. **PNG/JPG** single-slice images.
-4. **TIFF/WSI** support:
-   - Single/multi-page `.tif` with Pillow
-   - Whole-slide `.svs`, `.scn`, `.mrxs`, `.ndpi` with OpenSlide
+3. **PNG/JPG** support for 2D images (grayscale or RGB).
+4. **TIFF / WSI** support:
+   - Standard `.tif/.tiff` images using Pillow
+   - Whole-slide formats (`.svs/.ndpi/.scn/.mrxs`) via OpenSlide (if installed)
 5. **Preprocessing Tools**:
    - Histogram Equalization
    - Brightness/Contrast
    - Colormap (JET)
-   - Zoom & Pan
-6. **Metadata Window** for each file, displaying basic DICOM tags or NIfTI/OpenSlide headers.
-7. **Navigation**:
-   - Sliders for multiple files in the same directory
-   - Sliders for slices/time dimension if it’s a 3D/4D dataset
-   - “Prev/Next” file buttons
-   - File index slider for quick scanning
+   - Reset preprocessing to defaults
+6. **Segmentation Overlays (binary + multi-class)**:
+   - Load/Clear mask (NIfTI/PNG/TIFF/NPY)
+   - Per-label colormap (auto)
+   - Per-label visibility toggles (checkboxes)
+   - Label names via:
+     - sidecar JSON auto-detection (safe optional)
+     - manual “label-map JSON” file loading
+   - Outline-only mode
+   - One-time mismatch warning if mask and image geometry differ
+7. **Metadata Window** for each file (DICOM tags, NIfTI header, OpenSlide info).
+8. **Navigation**:
+   - “Prev/Next” file buttons + file slider
+   - Slice (Z) and time (T) sliders for 3D/4D datasets
+   - Keyboard shortcuts for fast browsing
+9. **UX Improvements**:
+   - Split-pane layout (image left, toolbox right)
+   - Bottom-right Quick Actions with confirmations for destructive resets
+   - Pixel Inspector (hover readout in the status bar)
 
 ---
 
