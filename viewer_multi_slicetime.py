@@ -1097,7 +1097,22 @@ def create_viewer(file_paths, modality="AUTO"):
 
         arr = None
         if file_type == "DICOM":
-            arr = image_loader.load_dicom(path)
+            arr = None
+
+            # Prefer series stacking, but always fallback to single-file load.
+            try:
+                vol3d, meta_series, meta_dict = image_loader.load_dicom_series_from_file(path)
+                arr = vol3d  # (H,W,Z) float32
+                # Override metadata label with series-aware metadata
+                metadata_label.config(text=meta_series)
+            except Exception as e:
+                print(f"[WARN] load_dicom_series_from_file failed: {e}. Falling back to single-file DICOM.")
+                try:
+                    arr = image_loader.load_dicom(path)  # your old single-file loader
+                except Exception as e2:
+                    print(f"[ERROR] Single-file DICOM load failed: {e2}")
+                    arr = None
+
         elif file_type == "NIfTI":
             arr = nib.load(path).get_fdata()
         elif file_type == "JPEG/PNG":
