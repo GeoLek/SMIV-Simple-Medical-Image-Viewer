@@ -66,13 +66,17 @@ def scan_directory_for_images(dir_path: str) -> list:
     """
     Scans a directory and returns recognized image paths.
 
-    Note: This uses detect_file_type_and_metadata which may be slower for huge folders.
+    IMPORTANT:
+      - DICOM is grouped as ONE entry per SeriesInstanceUID (so folders with 300 slices won't flood the slider).
+      - Non-DICOM files are added normally.
     """
     if not dir_path or not os.path.isdir(dir_path):
         return []
 
     all_files = sorted(os.listdir(dir_path))
     recognized = []
+
+    seen_dicom_series = set()
 
     for f in all_files:
         full_p = os.path.join(dir_path, f)
@@ -84,10 +88,76 @@ def scan_directory_for_images(dir_path: str) -> list:
         except Exception:
             file_type = None
 
-        if file_type in ["DICOM", "NIfTI", "JPEG/PNG", "TIFF", "WHOLESLIDE"]:
+        if file_type == "DICOM":
+            # Group by SeriesInstanceUID
+            try:
+                uid = image_loader.get_dicom_series_uid(full_p)
+            except Exception:
+                uid = None
+
+            if uid:
+                if uid in seen_dicom_series:
+                    continue
+                seen_dicom_series.add(uid)
+                recognized.append(full_p)
+            else:
+                # If UID missing, keep it as a single item
+                recognized.append(full_p)
+
+        elif file_type in ["NIfTI", "JPEG/PNG", "TIFF", "WHOLESLIDE"]:
             recognized.append(full_p)
 
     return recognized
+
+
+def _move_selected_to_front(recognized_paths: list, selected_path: str) -> list:
+    """
+    Ensures the selected item becomes the first item shown in the viewer.
+    Special handling for DICOM: move the representative path of the selected series.
+    """
+    if not recognized_paths:
+        return recognized_paths
+
+    selected_path = os.path.abspath(selected_path)
+
+    try:
+        selected_type, _ = image_loader.detect_file_type_and_metadata(selected_path)
+    except Exception:
+        selected_type = None
+
+    # DICOM: selected file may be a slice; recognized_paths likely has only 1 representative per series
+    if selected_type == "DICOM":
+        try:
+            selected_uid = image_loader.get_dicom_series_uid(selected_path)
+        except Exception:
+            selected_uid = None
+
+        if selected_uid:
+            rep_idx = None
+            for i, p in enumerate(recognized_paths):
+                try:
+                    uid_i = image_loader.get_dicom_series_uid(p)
+                except Exception:
+                    uid_i = None
+                if uid_i == selected_uid:
+                    rep_idx = i
+                    break
+
+            if rep_idx is not None:
+                rep = recognized_paths.pop(rep_idx)
+                recognized_paths.insert(0, rep)
+                return recognized_paths
+
+        # Fallback: if no UID match found, just force selected_path to front
+        # (may duplicate, but better than opening a different series)
+        recognized_paths = [p for p in recognized_paths if os.path.abspath(p) != selected_path]
+        recognized_paths.insert(0, selected_path)
+        return recognized_paths
+
+    # Non-DICOM: move the exact file to front if present
+    recognized_paths = [p for p in recognized_paths if os.path.abspath(p) != selected_path]
+    recognized_paths.insert(0, selected_path)
+    return recognized_paths
 
 
 def open_viewer_with_selected_file(file_path: str, modality: str = "AUTO"):
@@ -102,10 +172,7 @@ def open_viewer_with_selected_file(file_path: str, modality: str = "AUTO"):
         messagebox.showwarning(APP_NAME, "No supported image files were found in the selected file's folder.")
         return
 
-    # Move selected file to front
-    if file_path in recognized_paths:
-        recognized_paths.remove(file_path)
-    recognized_paths.insert(0, file_path)
+    recognized_paths = _move_selected_to_front(recognized_paths, file_path)
 
     viewer_multi_slicetime.create_viewer(recognized_paths, modality)
 
@@ -119,7 +186,7 @@ def open_viewer_with_folder(dir_path: str, modality: str = "AUTO"):
         messagebox.showwarning(APP_NAME, "No supported image files were found in the selected folder.")
         return
 
-    # Open viewer starting at the first recognized file
+    # Store something meaningful in recents: the first recognized entry (series rep / file)
     add_recent_file(recognized_paths[0])
     viewer_multi_slicetime.create_viewer(recognized_paths, modality)
 
@@ -180,7 +247,6 @@ def main():
 
     root = TkRoot()
 
-    # Callbacks for UI
     widgets = {}
 
     def refresh_recent_list():
@@ -226,10 +292,13 @@ def main():
     def on_open_recent(path: str):
         if not path:
             return
+        path = os.path.abspath(path)
+
         if os.path.isdir(path):
             open_viewer_with_folder(path, modality="AUTO")
         else:
             open_viewer_with_selected_file(path, modality="AUTO")
+
         refresh_recent_list()
 
     def on_clear_recent():
@@ -255,8 +324,7 @@ def main():
             if not paths:
                 return
 
-            first = paths[0]
-            first = os.path.abspath(first)
+            first = os.path.abspath(paths[0])
 
             if os.path.isdir(first):
                 open_viewer_with_folder(first, modality="AUTO")
