@@ -195,6 +195,9 @@ def create_viewer(file_paths, modality="AUTO"):
         "last_disp_base_wh": None,
         "last_disp_scaled_wh": None,
         "last_mask_scaled": None,
+
+        "dicom_meta": None,
+        "is_ct": False
     }
 
     settings = {
@@ -203,6 +206,11 @@ def create_viewer(file_paths, modality="AUTO"):
         "brightness_contrast": BooleanVar(value=False),
         "brightness": IntVar(value=0),
         "contrast": IntVar(value=1),
+
+        # CT Window/Level (applied before 0..255 conversion)
+        "wl_enabled": BooleanVar(value=False),
+        "wl_center": IntVar(value=40),
+        "wl_width": IntVar(value=400),
     }
 
     root.grid_rowconfigure(1, weight=1)
@@ -388,12 +396,85 @@ def create_viewer(file_paths, modality="AUTO"):
         command=lambda _x: display_current_slice(),
     ).pack(fill=tk.X, pady=(5, 0))
 
+    # --- CT Window/Level UI (enabled only for CT DICOM) ---
+    wl_box = tk.LabelFrame(preproc_frame, text="CT Window/Level", bg=theme["bg"], fg=theme["text"])
+    wl_box.pack(fill=tk.X, pady=(12, 0))
+
+    wl_enable_cb = Checkbutton(
+        wl_box,
+        text="Enable Window/Level (CT)",
+        variable=settings["wl_enabled"],
+        command=lambda: display_current_slice(),
+        bg=theme["bg"],
+        fg=theme["text"],
+        activebackground=theme["bg"],
+        selectcolor=theme["bg"],
+    )
+    wl_enable_cb.pack(anchor="w", padx=6, pady=(6, 0))
+
+    wl_center_scale = Scale(
+        wl_box,
+        from_=-1024,
+        to=3071,
+        label="Center (WL)",
+        variable=settings["wl_center"],
+        orient=tk.HORIZONTAL,
+        command=lambda _x: display_current_slice(),
+    )
+    wl_center_scale.pack(fill=tk.X, padx=6, pady=(6, 0))
+
+    wl_width_scale = Scale(
+        wl_box,
+        from_=1,
+        to=5000,
+        label="Width (WW)",
+        variable=settings["wl_width"],
+        orient=tk.HORIZONTAL,
+        command=lambda _x: display_current_slice(),
+    )
+    wl_width_scale.pack(fill=tk.X, padx=6, pady=(6, 6))
+
+    # Simple presets (optional but very useful)
+    preset_row = tk.Frame(wl_box, bg=theme["bg"])
+    preset_row.pack(fill=tk.X, padx=6, pady=(0, 6))
+
+    def _set_wl(center, width):
+        settings["wl_center"].set(int(center))
+        settings["wl_width"].set(int(width))
+        settings["wl_enabled"].set(True)
+        display_current_slice()
+
+    tk.Button(preset_row, text="Soft", command=lambda: _set_wl(40, 400)).pack(side=tk.LEFT, padx=(0, 6))
+    tk.Button(preset_row, text="Lung", command=lambda: _set_wl(-600, 1500)).pack(side=tk.LEFT, padx=(0, 6))
+    tk.Button(preset_row, text="Bone", command=lambda: _set_wl(300, 1500)).pack(side=tk.LEFT)
+
+    def _update_wl_ui_enabled():
+        """
+        Enable WL controls only when current file is CT (DICOM modality == CT).
+        """
+        is_ct = bool(state.get("is_ct", False))
+        st = "normal" if is_ct else "disabled"
+
+        try:
+            wl_enable_cb.configure(state=st)
+            wl_center_scale.configure(state=st)
+            wl_width_scale.configure(state=st)
+        except Exception:
+            pass
+
+        if not is_ct:
+            # Avoid applying WL on non-CT
+            settings["wl_enabled"].set(False)
+
     def reset_preprocessing():
         settings["hist_eq"].set(False)
         settings["colormap"].set(False)
         settings["brightness_contrast"].set(False)
         settings["brightness"].set(0)
         settings["contrast"].set(1)
+        settings["wl_enabled"].set(False)
+        settings["wl_center"].set(40)
+        settings["wl_width"].set(400)
         display_current_slice()
 
     def confirm_reset_preproc():
@@ -717,6 +798,9 @@ def create_viewer(file_paths, modality="AUTO"):
                 "brightness_contrast": bool(settings["brightness_contrast"].get()),
                 "brightness": int(settings["brightness"].get()),
                 "contrast": float(settings["contrast"].get()),
+                "wl_enabled": bool(settings["wl_enabled"].get()),
+                "wl_center": int(settings["wl_center"].get()),
+                "wl_width": int(settings["wl_width"].get()),
             },
             "overlay": {
                 "overlay_enabled": bool(overlay_var.get()),
@@ -742,6 +826,15 @@ def create_viewer(file_paths, modality="AUTO"):
                 settings["contrast"].set(float(pre.get("contrast", 1)))
             except Exception:
                 settings["contrast"].set(1)
+            settings["wl_enabled"].set(bool(pre.get("wl_enabled", False)))
+            try:
+                settings["wl_center"].set(int(pre.get("wl_center", 40)))
+            except Exception:
+                settings["wl_center"].set(40)
+            try:
+                settings["wl_width"].set(int(pre.get("wl_width", 400)))
+            except Exception:
+                settings["wl_width"].set(400)
 
         ov = preset.get("overlay", {})
         if isinstance(ov, dict):
@@ -793,6 +886,8 @@ def create_viewer(file_paths, modality="AUTO"):
             display_current_slice()
         return True
 
+    _update_wl_ui_enabled()
+
     def save_session_preset():
         path = file_paths[state["current_file_index"]]
         key = _preset_key(path)
@@ -837,6 +932,9 @@ def create_viewer(file_paths, modality="AUTO"):
             parts.append(insp)
 
         status_label.config(text=" | ".join(parts))
+
+        if state.get("is_ct", False) and bool(settings["wl_enabled"].get()):
+            parts.append(f"WL {settings['wl_center'].get()}/{settings['wl_width'].get()}")
 
     # Zoom/Pan events
     def on_mouse_wheel(event):
@@ -947,6 +1045,21 @@ def create_viewer(file_paths, modality="AUTO"):
         state["inspector_text"] = ""
         update_status()
 
+    def _apply_window_level_to_8bit(img_hu: np.ndarray, center: float, width: float) -> np.ndarray:
+        """
+        Map HU image -> uint8 using Window/Level.
+        Output range is 0..255 float32 (still ok for your downstream pipeline).
+        """
+        w = float(max(1.0, width))
+        c = float(center)
+
+        lo = c - (w / 2.0)
+        hi = c + (w / 2.0)
+
+        out = (img_hu - lo) / (hi - lo)
+        out = np.clip(out, 0.0, 1.0) * 255.0
+        return out.astype(np.float32)
+
     # Display pipeline
     def build_display_image():
         vol = state["volume"]
@@ -963,10 +1076,20 @@ def create_viewer(file_paths, modality="AUTO"):
         if is_rgb:
             slice_2d = vol.astype(np.float32)
         else:
-            slice_2d = vol[..., state["z_index"], state["t_index"]].astype(np.float32)
-            mn, mx = slice_2d.min(), slice_2d.max()
-            if mx > mn:
-                slice_2d = (slice_2d - mn) / (mx - mn) * 255.0
+            slice_src = vol[..., state["z_index"], state["t_index"]].astype(np.float32)
+
+            # CT: apply WL if enabled (HU -> 0..255)
+            if state.get("is_ct", False) and bool(settings["wl_enabled"].get()):
+                c = float(settings["wl_center"].get())
+                wwl = float(settings["wl_width"].get())
+                slice_2d = _apply_window_level_to_8bit(slice_src, c, wwl)
+            else:
+                # Generic normalization for non-CT (or CT when WL is disabled)
+                mn, mx = float(np.min(slice_src)), float(np.max(slice_src))
+                if mx > mn:
+                    slice_2d = (slice_src - mn) / (mx - mn) * 255.0
+                else:
+                    slice_2d = np.zeros_like(slice_src, dtype=np.float32)
 
         out = image_processing.apply_all_processing(
             slice_2d,
@@ -1103,10 +1226,31 @@ def create_viewer(file_paths, modality="AUTO"):
             try:
                 vol3d, meta_series, meta_dict = image_loader.load_dicom_series_from_file(path)
                 arr = vol3d  # (H,W,Z) float32
+                state["dicom_meta"] = meta_dict
+                state["is_ct"] = (str(meta_dict.get("Modality", "")).upper() == "CT")
+
+                # If CT and tags exist, initialize WL and enable it by default
+                if state["is_ct"]:
+                    wc = meta_dict.get("WindowCenter", None)
+                    ww = meta_dict.get("WindowWidth", None)
+                    if wc is not None and ww is not None:
+                        try:
+                            settings["wl_center"].set(int(round(float(wc))))
+                            settings["wl_width"].set(int(round(float(ww))))
+                            settings["wl_enabled"].set(True)
+                        except Exception:
+                            pass
+                else:
+                    settings["wl_enabled"].set(False)
+
                 # Override metadata label with series-aware metadata
                 metadata_label.config(text=meta_series)
             except Exception as e:
                 print(f"[WARN] load_dicom_series_from_file failed: {e}. Falling back to single-file DICOM.")
+                state["dicom_meta"] = None
+                state["is_ct"] = False
+                settings["wl_enabled"].set(False)
+
                 try:
                     arr = image_loader.load_dicom(path)  # your old single-file loader
                 except Exception as e2:
@@ -1121,6 +1265,11 @@ def create_viewer(file_paths, modality="AUTO"):
             arr = image_loader.load_tiff(path)
         elif file_type == "WHOLESLIDE":
             arr = image_loader.load_whole_slide_downsampled(path)
+
+        if file_type != "DICOM":
+            state["dicom_meta"] = None
+            state["is_ct"] = False
+            settings["wl_enabled"].set(False)
 
         if arr is None:
             state["volume"] = None
@@ -1178,6 +1327,7 @@ def create_viewer(file_paths, modality="AUTO"):
         state["zoom_factor"] = 1.0
         state["pan_x"] = 0.0
         state["pan_y"] = 0.0
+        _update_wl_ui_enabled()
 
         # Auto-apply preset if exists (silent)
         apply_session_preset(show_message=False)
