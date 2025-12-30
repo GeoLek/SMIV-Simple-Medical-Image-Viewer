@@ -450,10 +450,22 @@ def create_viewer(file_paths, modality="AUTO"):
 
     def _update_wl_ui_enabled():
         """
-        Enable WL controls only when current file is CT (DICOM modality == CT).
+        Enable Window/Level controls for any *grayscale* volume (DICOM, NIfTI, etc.).
+        Disable only for RGB images (PNG/TIFF color).
+        HU presets should remain CT-only (handled separately if you have preset buttons).
         """
-        is_ct = bool(state.get("is_ct", False))
-        st = "normal" if is_ct else "disabled"
+        vol = state.get("volume")
+        ft = state.get("current_file_type")
+
+        # Detect RGB 2D images (not suitable for WL in this simple model)
+        is_rgb = (
+                ft in ["JPEG/PNG", "TIFF"]
+                and vol is not None
+                and getattr(vol, "ndim", 0) == 3
+                and vol.shape[2] == 3
+        )
+
+        st = "disabled" if is_rgb else "normal"
 
         try:
             wl_enable_cb.configure(state=st)
@@ -462,8 +474,8 @@ def create_viewer(file_paths, modality="AUTO"):
         except Exception:
             pass
 
-        if not is_ct:
-            # Avoid applying WL on non-CT
+        # If RGB, force WL off so pipeline doesn't try to apply it
+        if is_rgb:
             settings["wl_enabled"].set(False)
 
     def reset_preprocessing():
@@ -1079,7 +1091,7 @@ def create_viewer(file_paths, modality="AUTO"):
             slice_src = vol[..., state["z_index"], state["t_index"]].astype(np.float32)
 
             # CT: apply WL if enabled (HU -> 0..255)
-            if state.get("is_ct", False) and bool(settings["wl_enabled"].get()):
+            if (not is_rgb) and bool(settings["wl_enabled"].get()):
                 c = float(settings["wl_center"].get())
                 wwl = float(settings["wl_width"].get())
                 slice_2d = _apply_window_level_to_8bit(slice_src, c, wwl)
