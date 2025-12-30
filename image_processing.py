@@ -138,6 +138,25 @@ def apply_zoom_and_pan(
         resized = cv2.resize(cropped_u8, (w, h), interpolation=cv2.INTER_LINEAR)
         return resized.astype(np.float32)
 
+def apply_window_level(slice_raw: np.ndarray, center: float, width: float) -> np.ndarray:
+    """
+    Apply Window/Level mapping to a float32 slice in native units (e.g., HU).
+    Returns float32 in [0, 255].
+    """
+    x = slice_raw.astype(np.float32, copy=False)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+    w = float(width)
+    if w <= 1e-6:
+        w = 1.0
+    c = float(center)
+
+    low = c - 0.5 - (w - 1.0) / 2.0
+    high = c - 0.5 + (w - 1.0) / 2.0
+
+    y = (x - low) / (high - low)
+    y = np.clip(y, 0.0, 1.0) * 255.0
+    return y.astype(np.float32)
 
 def apply_all_processing(
     img_array: np.ndarray,
