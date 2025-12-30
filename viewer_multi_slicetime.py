@@ -213,6 +213,39 @@ def create_viewer(file_paths, modality="AUTO"):
         "wl_width": IntVar(value=400),
     }
 
+    WL_PRESETS_CT = {
+        "Soft tissue": (40, 400),
+        "Lung": (-600, 1500),
+        "Bone": (300, 2000),
+    }
+
+    def auto_window_level_from_slice(slice_raw: np.ndarray):
+        """
+        Compute a robust auto window/level from the current slice.
+        Uses percentiles so it's stable even with outliers.
+        """
+        x = slice_raw.astype(np.float32, copy=False)
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Avoid empty/constant slices
+        if x.size == 0:
+            return 40, 400
+
+        # Robust range
+        p1 = float(np.percentile(x, 1))
+        p99 = float(np.percentile(x, 99))
+
+        if p99 <= p1:
+            mn = float(np.min(x))
+            mx = float(np.max(x))
+            if mx <= mn:
+                return 40, 400
+            p1, p99 = mn, mx
+
+        width = max(1.0, p99 - p1)
+        center = (p99 + p1) / 2.0
+        return int(round(center)), int(round(width))
+
     root.grid_rowconfigure(1, weight=1)
     root.grid_columnconfigure(0, weight=1)
 
@@ -396,13 +429,13 @@ def create_viewer(file_paths, modality="AUTO"):
         command=lambda _x: display_current_slice(),
     ).pack(fill=tk.X, pady=(5, 0))
 
-    # --- CT Window/Level UI (enabled only for CT DICOM) ---
-    wl_box = tk.LabelFrame(preproc_frame, text="CT Window/Level", bg=theme["bg"], fg=theme["text"])
-    wl_box.pack(fill=tk.X, pady=(12, 0))
+    # --- Window/Level (WL) ---
+    wl_frame = tk.LabelFrame(preproc_frame, text="Window / Level", bg=theme["bg"], fg=theme["text"])
+    wl_frame.pack(fill=tk.X, pady=(12, 0))
 
-    wl_enable_cb = Checkbutton(
-        wl_box,
-        text="Enable Window/Level (CT)",
+    wl_enable_cb = tk.Checkbutton(
+        wl_frame,
+        text="Enable Window/Level",
         variable=settings["wl_enabled"],
         command=lambda: display_current_slice(),
         bg=theme["bg"],
@@ -410,43 +443,75 @@ def create_viewer(file_paths, modality="AUTO"):
         activebackground=theme["bg"],
         selectcolor=theme["bg"],
     )
-    wl_enable_cb.pack(anchor="w", padx=6, pady=(6, 0))
+    wl_enable_cb.pack(anchor="w", pady=(4, 0))
 
-    wl_center_scale = Scale(
-        wl_box,
-        from_=-1024,
-        to=3071,
-        label="Center (WL)",
+    wl_center_scale = tk.Scale(
+        wl_frame,
+        from_=-2000,
+        to=2000,
+        label="Center (Level)",
         variable=settings["wl_center"],
         orient=tk.HORIZONTAL,
         command=lambda _x: display_current_slice(),
+        bg=theme["bg"],
+        fg=theme["text"],
+        troughcolor=theme["button"],
+        highlightbackground=theme["bg"],
     )
-    wl_center_scale.pack(fill=tk.X, padx=6, pady=(6, 0))
+    wl_center_scale.pack(fill=tk.X, pady=(6, 0))
 
-    wl_width_scale = Scale(
-        wl_box,
+    wl_width_scale = tk.Scale(
+        wl_frame,
         from_=1,
-        to=5000,
-        label="Width (WW)",
+        to=4000,
+        label="Width (Window)",
         variable=settings["wl_width"],
         orient=tk.HORIZONTAL,
         command=lambda _x: display_current_slice(),
+        bg=theme["bg"],
+        fg=theme["text"],
+        troughcolor=theme["button"],
+        highlightbackground=theme["bg"],
     )
-    wl_width_scale.pack(fill=tk.X, padx=6, pady=(6, 6))
+    wl_width_scale.pack(fill=tk.X, pady=(6, 0))
 
-    # Simple presets (optional but very useful)
-    preset_row = tk.Frame(wl_box, bg=theme["bg"])
-    preset_row.pack(fill=tk.X, padx=6, pady=(0, 6))
+    wl_btn_row = tk.Frame(wl_frame, bg=theme["bg"])
+    wl_btn_row.pack(fill=tk.X, pady=(8, 4))
 
-    def _set_wl(center, width):
-        settings["wl_center"].set(int(center))
-        settings["wl_width"].set(int(width))
+    def _apply_ct_preset(name: str):
+        c, w = WL_PRESETS_CT[name]
+        settings["wl_center"].set(int(c))
+        settings["wl_width"].set(int(w))
         settings["wl_enabled"].set(True)
         display_current_slice()
 
-    tk.Button(preset_row, text="Soft", command=lambda: _set_wl(40, 400)).pack(side=tk.LEFT, padx=(0, 6))
-    tk.Button(preset_row, text="Lung", command=lambda: _set_wl(-600, 1500)).pack(side=tk.LEFT, padx=(0, 6))
-    tk.Button(preset_row, text="Bone", command=lambda: _set_wl(300, 1500)).pack(side=tk.LEFT)
+    def _auto_wl_now():
+        # Use current displayed slice (raw) by rebuilding slice from volume directly
+        vol = state.get("volume")
+        if vol is None:
+            return
+        ft = state.get("current_file_type")
+        is_rgb = (ft in ["JPEG/PNG", "TIFF"] and vol.ndim == 3 and vol.shape[2] == 3)
+        if is_rgb:
+            return  # WL not meaningful for RGB
+
+        slice_raw = vol[..., state["z_index"], state["t_index"]].astype(np.float32)
+        c, w = auto_window_level_from_slice(slice_raw)
+        settings["wl_center"].set(int(c))
+        settings["wl_width"].set(int(w))
+        settings["wl_enabled"].set(True)
+        display_current_slice()
+
+    tk.Button(wl_btn_row, text="Auto", command=_auto_wl_now).pack(side=tk.LEFT, padx=(0, 6))
+
+    # CT presets (enabled only for CT; see enabling function below)
+    btn_preset_soft = tk.Button(wl_btn_row, text="Soft tissue", command=lambda: _apply_ct_preset("Soft tissue"))
+    btn_preset_lung = tk.Button(wl_btn_row, text="Lung", command=lambda: _apply_ct_preset("Lung"))
+    btn_preset_bone = tk.Button(wl_btn_row, text="Bone", command=lambda: _apply_ct_preset("Bone"))
+
+    btn_preset_soft.pack(side=tk.LEFT, padx=(0, 6))
+    btn_preset_lung.pack(side=tk.LEFT, padx=(0, 6))
+    btn_preset_bone.pack(side=tk.LEFT)
 
     def _update_wl_ui_enabled():
         """
@@ -477,6 +542,15 @@ def create_viewer(file_paths, modality="AUTO"):
         # If RGB, force WL off so pipeline doesn't try to apply it
         if is_rgb:
             settings["wl_enabled"].set(False)
+
+        # CT preset buttons should be CT-only (but WL sliders can work for any grayscale)
+        st_ct = "normal" if (not is_rgb and bool(state.get("is_ct", False))) else "disabled"
+        try:
+            btn_preset_soft.configure(state=st_ct)
+            btn_preset_lung.configure(state=st_ct)
+            btn_preset_bone.configure(state=st_ct)
+        except Exception:
+            pass
 
     def reset_preprocessing():
         settings["hist_eq"].set(False)
@@ -847,6 +921,7 @@ def create_viewer(file_paths, modality="AUTO"):
                 settings["wl_width"].set(int(pre.get("wl_width", 400)))
             except Exception:
                 settings["wl_width"].set(400)
+        _update_wl_ui_enabled()
 
         ov = preset.get("overlay", {})
         if isinstance(ov, dict):
@@ -1090,8 +1165,8 @@ def create_viewer(file_paths, modality="AUTO"):
         else:
             slice_src = vol[..., state["z_index"], state["t_index"]].astype(np.float32)
 
-            # CT: apply WL if enabled (HU -> 0..255)
-            if (not is_rgb) and bool(settings["wl_enabled"].get()):
+            # Apply WL for any grayscale volume when enabled
+            if bool(settings["wl_enabled"].get()):
                 c = float(settings["wl_center"].get())
                 wwl = float(settings["wl_width"].get())
                 slice_2d = _apply_window_level_to_8bit(slice_src, c, wwl)
@@ -1281,7 +1356,6 @@ def create_viewer(file_paths, modality="AUTO"):
         if file_type != "DICOM":
             state["dicom_meta"] = None
             state["is_ct"] = False
-            settings["wl_enabled"].set(False)
 
         if arr is None:
             state["volume"] = None
