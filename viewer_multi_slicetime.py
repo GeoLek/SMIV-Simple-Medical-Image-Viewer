@@ -1147,6 +1147,32 @@ def create_viewer(file_paths, modality="AUTO"):
         out = np.clip(out, 0.0, 1.0) * 255.0
         return out.astype(np.float32)
 
+    def _robust_normalize_to_8bit(x: np.ndarray, p_low: float = 1.0, p_high: float = 99.0) -> np.ndarray:
+        """
+        Robustly map a float image to 0..255 using percentiles.
+        Returns float32 in 0..255 (same as WL output).
+        """
+        x = x.astype(np.float32, copy=False)
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if x.size == 0:
+            return np.zeros_like(x, dtype=np.float32)
+
+        lo = float(np.percentile(x, p_low))
+        hi = float(np.percentile(x, p_high))
+
+        if hi <= lo:
+            mn = float(np.min(x))
+            mx = float(np.max(x))
+            if mx <= mn:
+                return np.zeros_like(x, dtype=np.float32)
+            lo, hi = mn, mx
+
+        y = (x - lo) / (hi - lo)
+        y = np.clip(y, 0.0, 1.0) * 255.0
+        return y.astype(np.float32)
+
+
     # Display pipeline
     def build_display_image():
         vol = state["volume"]
@@ -1171,12 +1197,8 @@ def create_viewer(file_paths, modality="AUTO"):
                 wwl = float(settings["wl_width"].get())
                 slice_2d = _apply_window_level_to_8bit(slice_src, c, wwl)
             else:
-                # Generic normalization for non-CT (or CT when WL is disabled)
-                mn, mx = float(np.min(slice_src)), float(np.max(slice_src))
-                if mx > mn:
-                    slice_2d = (slice_src - mn) / (mx - mn) * 255.0
-                else:
-                    slice_2d = np.zeros_like(slice_src, dtype=np.float32)
+                # Robust normalization (stable across slices, less outlier-sensitive)
+                slice_2d = _robust_normalize_to_8bit(slice_src, p_low=1.0, p_high=99.0)
 
         out = image_processing.apply_all_processing(
             slice_2d,
