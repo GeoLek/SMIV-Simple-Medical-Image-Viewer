@@ -133,9 +133,11 @@ def detect_file_type_and_metadata(file_path):
     except Exception as e:
         print(f"[DEBUG] DICOM read failed: {e}")
 
-    # 3) Try NIfTI
+    # 3) Try NIfTI (only if extension matches)
     try:
         print("[DEBUG] Attempting NIfTI read...")
+        if not (file_path.lower().endswith(".nii") or file_path.lower().endswith(".nii.gz")):
+            raise RuntimeError("Not a NIfTI extension")
         nii = nib.load(file_path)
         if nii:
             shape = nii.shape
@@ -229,10 +231,97 @@ def load_whole_slide_downsampled(file_path, max_dim=2048):
 # ---------------------------------------------------------
 # Basic image loaders
 # ---------------------------------------------------------
+
+def _nifti_to_viewer_axes(arr: np.ndarray) -> np.ndarray:
+    """
+    Convert NIfTI array from nibabel (X,Y,Z[,T]) into viewer-friendly (H,W,Z[,T])
+    using (Y,X,Z[,T]) so it matches how your viewer treats (H,W,...) images.
+    """
+    if arr.ndim == 3:
+        # (X,Y,Z) -> (Y,X,Z)
+        return np.transpose(arr, (1, 0, 2))
+    if arr.ndim == 4:
+        # (X,Y,Z,T) -> (Y,X,Z,T)
+        return np.transpose(arr, (1, 0, 2, 3))
+    return arr
+
+
+def load_nifti_with_meta(file_path: str, canonical: bool = True):
+    """
+    Load NIfTI and optionally reorient to closest canonical (RAS+) using nibabel.
+    Returns:
+      vol_viewer: float32 array in viewer axes (H,W,Z) or (H,W,Z,T)
+      meta_str: human-readable metadata
+      meta_dict: dictionary with orientation + voxel sizes + shapes
+    """
+    img = nib.load(file_path)
+
+    # Original orientation codes (from affine)
+    try:
+        orig_axcodes = nib.aff2axcodes(img.affine)
+    except Exception:
+        orig_axcodes = None
+
+    try:
+        orig_vox = tuple(float(x) for x in nib.affines.voxel_sizes(img.affine))
+    except Exception:
+        orig_vox = None
+
+    img_use = img
+    canon_axcodes = orig_axcodes
+    canon_vox = orig_vox
+
+    if canonical:
+        try:
+            img_use = nib.as_closest_canonical(img)
+            canon_axcodes = nib.aff2axcodes(img_use.affine)
+            canon_vox = tuple(float(x) for x in nib.affines.voxel_sizes(img_use.affine))
+        except Exception:
+            # If canonical fails for any reason, fall back safely
+            img_use = img
+            canon_axcodes = orig_axcodes
+            canon_vox = orig_vox
+
+    data = img_use.get_fdata().astype(np.float32, copy=False)
+    vol_viewer = _nifti_to_viewer_axes(data)
+
+    viewer_vox = None
+    if canon_vox and len(canon_vox) >= 3:
+        # Common case: viewer swaps first two axes (X<->Y) to get (H,W,Z)
+        viewer_vox = (canon_vox[1], canon_vox[0], canon_vox[2])
+
+    meta_dict = {
+        "canonical_applied": bool(canonical),
+        "orig_axcodes": orig_axcodes,
+        "canon_axcodes": canon_axcodes,
+        "orig_voxel_sizes": orig_vox,
+        "canon_voxel_sizes": canon_vox,
+        "shape_native": tuple(img.shape),
+        "shape_canonical": tuple(img_use.shape),
+        "shape_viewer": tuple(vol_viewer.shape),
+        "zooms": viewer_vox,
+        "canon_voxel_sizes": canon_vox,
+    }
+
+    meta_str = (
+        "===== NIfTI Info =====\n"
+        f"File: {os.path.basename(file_path)}\n"
+        f"Native shape: {meta_dict['shape_native']}\n"
+        f"Canonical applied: {meta_dict['canonical_applied']}\n"
+        f"Orig axcodes: {meta_dict['orig_axcodes']}\n"
+        f"Canon axcodes: {meta_dict['canon_axcodes']}\n"
+        f"Orig voxel sizes: {meta_dict['orig_voxel_sizes']}\n"
+        f"Canon voxel sizes: {meta_dict['canon_voxel_sizes']}\n"
+        f"Viewer shape (H,W,Z[,T]): {meta_dict['shape_viewer']}\n"
+        "======================\n"
+    )
+
+    return vol_viewer, meta_str, meta_dict
+
 def load_nifti(file_path):
-    """Load NIfTI => float64 array."""
-    nii_data = nib.load(file_path)
-    return nii_data.get_fdata()
+    """Backward-compatible NIfTI loader (no canonical)."""
+    vol, _meta_str, _meta = load_nifti_with_meta(file_path, canonical=False)
+    return vol
 
 def load_jpeg_png(file_path):
     """
