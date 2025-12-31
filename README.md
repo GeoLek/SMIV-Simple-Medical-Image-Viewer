@@ -2,24 +2,27 @@
 
 SMIV is a lightweight, cross-platform medical image viewer designed for quickly browsing heterogeneous medical imaging studies and research datasets. It supports:
 
-- **DICOM** (with or without `.dcm` extension),
-- **NIfTI** (`.nii`, `.nii.gz`) including 3D/4D volumes,
+- **DICOM** (with or without `.dcm` extension), including **series stacking when possible** with **single-file fallback**,
+- **NIfTI** (`.nii`, `.nii.gz`) including 3D/4D volumes, with optional **reorientation to canonical (RAS)** and **multi-plane viewing** (**Axial/Coronal/Sagittal**),
 - **PNG/JPG** for 2D images,
 - **TIFF** for standard 2D images,
 - **Whole-Slide Imaging (WSI)** formats like `.svs/.ndpi/.scn/.mrxs` (via **OpenSlide**, optional),
 - **Multi-file directory scanning** (browse all recognized images in the same folder),
 - **Automatic format detection** (even when files have no extension),
 - **Multi-slice/time navigation** for 3D/4D datasets,
-- **Preprocessing controls** (histogram equalization, brightness/contrast, colormap),
+- **Preprocessing controls** (histogram equalization, brightness/contrast, colormap), plus **Window/Level (WL)** controls for grayscale volumes,
 - **Interactive viewing** with **Zoom** (mouse wheel) and **Pan** (left-drag),
 - **Segmentation overlay support** (binary + multi-class), including:
   - **Load/Clear mask** (NIfTI / PNG / TIFF / NPY),
   - **Per-label color mapping** (auto-generated),
   - **Per-label visibility toggles** (show/hide selected labels),
+  - **Label filtering/search** (quickly find labels by id/name),
   - **Label names support** (auto-load sidecar JSON or manual label-map JSON),
   - **Mask/image mismatch warning** (warn once per loaded mask),
   - **Outline-only overlay mode** (optional),
 - **Pixel Inspector** (hover to read pixel intensity/RGB and, if present, mask label + label name),
+- **Export Current View** (save the displayed view as PNG),
+- **Session Presets (per-file)**: save and restore preprocessing + overlay settings automatically,
 - **Improved UI layout**: split view with a **resizable PanedWindow** (image on the left, toolbox on the right),
 - **Toolbox tabs** for clarity: **Navigation**, **Preprocessing**, **Overlay**,
 - **Quick Actions bar** at the **bottom-right** for safe, frequent actions (with confirmation prompts).
@@ -30,8 +33,10 @@ SMIV is written in Python using **Tkinter** for the GUI, **Pillow / NumPy / Open
 
 ## Features
 
-1. **DICOM** reading with or without `.dcm` (using `pydicom`).
-2. **NIfTI** reading for 3D/4D volumes (via `nibabel`).
+1. **DICOM** reading with or without `.dcm` (using `pydicom`), including **series stacking (when available)** with **fallback to single-file loading**.
+2. **NIfTI** reading for 3D/4D volumes (via `nibabel`), including:
+   - optional **reorientation to canonical (RAS)** (toggle, default ON),
+   - **Axial/Coronal/Sagittal plane viewing** (NIfTI only).
 3. **PNG/JPG** support for 2D images (grayscale or RGB).
 4. **TIFF / WSI** support:
    - Standard `.tif/.tiff` images using Pillow
@@ -40,11 +45,15 @@ SMIV is written in Python using **Tkinter** for the GUI, **Pillow / NumPy / Open
    - Histogram Equalization
    - Brightness/Contrast
    - Colormap (JET)
+   - **Window/Level (WL)** for grayscale volumes
+     - CT presets (Soft tissue / Lung / Bone) when CT is detected
+     - Auto WL (robust percentile-based)
    - Reset preprocessing to defaults
 6. **Segmentation Overlays (binary + multi-class)**:
    - Load/Clear mask (NIfTI/PNG/TIFF/NPY)
    - Per-label colormap (auto)
    - Per-label visibility toggles (checkboxes)
+   - **Label search/filter** + quick actions (**All / None / Invert**)
    - Label names via:
      - sidecar JSON auto-detection (safe optional)
      - manual “label-map JSON” file loading
@@ -54,11 +63,14 @@ SMIV is written in Python using **Tkinter** for the GUI, **Pillow / NumPy / Open
 8. **Navigation**:
    - “Prev/Next” file buttons + file slider
    - Slice (Z) and time (T) sliders for 3D/4D datasets
-   - Keyboard shortcuts for fast browsing
+   - **Plane-aware Z navigation** for NIfTI (Z adapts to Axial/Coronal/Sagittal)
+   - Keyboard shortcuts for fast browsing (file / Z / T)
+   - **Export Current View as PNG**
 9. **UX Improvements**:
    - Split-pane layout (image left, toolbox right)
    - Bottom-right Quick Actions with confirmations for destructive resets
    - Pixel Inspector (hover readout in the status bar)
+   - **Session Presets (per-file)**: Save/Apply presets for preprocessing + overlay settings
 
 ---
 
