@@ -196,6 +196,10 @@ def create_viewer(file_paths, modality="AUTO"):
         "last_disp_scaled_wh": None,
         "last_mask_scaled": None,
 
+        "is_nifti": False,
+        "nifti_meta": None,
+        "view_plane": "Axial",
+
         "dicom_meta": None,
         "is_ct": False
     }
@@ -211,6 +215,9 @@ def create_viewer(file_paths, modality="AUTO"):
         "wl_enabled": BooleanVar(value=False),
         "wl_center": IntVar(value=40),
         "wl_width": IntVar(value=400),
+
+        "nifti_canonical": BooleanVar(value=True),  # ON by default
+
     }
 
     WL_PRESETS_CT = {
@@ -336,6 +343,47 @@ def create_viewer(file_paths, modality="AUTO"):
         activebackground=theme["bg"],
         selectcolor=theme["bg"],
     ).pack(anchor="w", padx=10, pady=(0, 5))
+
+    # --- NIfTI reorientation + plane (Axial/Coronal/Sagittal) ---
+    plane_var = tk.StringVar(value=state.get("view_plane", "Axial"))
+
+    plane_row = tk.Frame(tab_nav, bg=theme["bg"])
+    plane_row.pack(fill=tk.X, padx=10, pady=(4, 6))
+    tk.Label(plane_row, text="View plane:", bg=theme["bg"], fg=theme["text"]).pack(side=tk.LEFT)
+
+    plane_combo = ttk.Combobox(
+        plane_row,
+        textvariable=plane_var,
+        values=["Axial", "Coronal", "Sagittal"],
+        state="readonly",
+        width=12,
+    )
+    plane_combo.pack(side=tk.LEFT, padx=(8, 0))
+
+    def _on_plane_changed(_event=None):
+        state["view_plane"] = plane_var.get() or "Axial"
+
+        # Reset view when changing plane (prevents “stuck zoomed/cropped” feeling)
+        state["pan_x"] = 0.0
+        state["pan_y"] = 0.0
+        state["zoom_factor"] = 1.0
+
+        _update_z_slider_for_current_volume()
+        display_current_slice()
+
+    plane_combo.bind("<<ComboboxSelected>>", _on_plane_changed)
+
+
+    nifti_canon_cb = Checkbutton(
+        tab_nav,
+        text="NIfTI: Reorient to canonical (RAS) [default ON]",
+        variable=settings["nifti_canonical"],
+        bg=theme["bg"],
+        fg=theme["text"],
+        activebackground=theme["bg"],
+        selectcolor=theme["bg"],
+    )
+    nifti_canon_cb.pack(anchor="w", padx=10, pady=(0, 6))
 
     def reset_view():
         state["pan_x"] = 0.0
@@ -495,7 +543,9 @@ def create_viewer(file_paths, modality="AUTO"):
         if is_rgb:
             return  # WL not meaningful for RGB
 
-        slice_raw = vol[..., state["z_index"], state["t_index"]].astype(np.float32)
+        plane = state.get("view_plane", "Axial") if state.get("current_file_type") == "NIfTI" else "Axial"
+        slice_raw = _get_2d_slice(vol, plane, state["z_index"], state["t_index"]).astype(np.float32)
+
         c, w = auto_window_level_from_slice(slice_raw)
         settings["wl_center"].set(int(c))
         settings["wl_width"].set(int(w))
@@ -708,9 +758,21 @@ def create_viewer(file_paths, modality="AUTO"):
             return False
 
         try:
-            m = overlay_utils.load_mask(mask_path)
+            if mask_path.lower().endswith(".nii") or mask_path.lower().endswith(".nii.gz"):
+                m, _m_meta_str, _m_meta = image_loader.load_nifti_with_meta(
+                    mask_path,
+                    canonical=bool(settings["nifti_canonical"].get()),
+                )
+            else:
+                m = overlay_utils.load_mask(mask_path)
         except Exception:
             return False
+
+        if isinstance(m, np.ndarray):
+            if m.ndim == 2:
+                m = m[..., np.newaxis, np.newaxis]
+            elif m.ndim == 3:
+                m = m[..., np.newaxis]
 
         state["mask_path"] = mask_path
         state["mask_volume"] = m
@@ -922,6 +984,7 @@ def create_viewer(file_paths, modality="AUTO"):
             except Exception:
                 settings["wl_width"].set(400)
         _update_wl_ui_enabled()
+        _update_plane_ui_enabled()
 
         ov = preset.get("overlay", {})
         if isinstance(ov, dict):
@@ -1018,10 +1081,13 @@ def create_viewer(file_paths, modality="AUTO"):
         if insp:
             parts.append(insp)
 
-        status_label.config(text=" | ".join(parts))
-
-        if state.get("is_ct", False) and bool(settings["wl_enabled"].get()):
+        if bool(settings["wl_enabled"].get()):
             parts.append(f"WL {settings['wl_center'].get()}/{settings['wl_width'].get()}")
+
+        if state.get("current_file_type") == "NIfTI":
+            parts.append(f"Plane {state.get('view_plane', 'Axial')}")
+
+        status_label.config(text=" | ".join(parts))
 
     # Zoom/Pan events
     def on_mouse_wheel(event):
@@ -1172,6 +1238,64 @@ def create_viewer(file_paths, modality="AUTO"):
         y = np.clip(y, 0.0, 1.0) * 255.0
         return y.astype(np.float32)
 
+    def _is_rgb_volume(vol, ft) -> bool:
+        return (
+            ft in ["JPEG/PNG", "TIFF"]
+            and vol is not None
+            and getattr(vol, "ndim", 0) == 3
+            and vol.shape[2] == 3
+        )
+
+    def _plane_depth(vol4d: np.ndarray, plane: str) -> int:
+        # vol4d is (H,W,Z,T)
+        if plane == "Sagittal":
+            return int(vol4d.shape[0])  # H
+        if plane == "Coronal":
+            return int(vol4d.shape[1])  # W
+        # Axial
+        return int(vol4d.shape[2])      # Z
+
+    def _get_2d_slice(vol4d: np.ndarray, plane: str, z_index: int, t_index: int) -> np.ndarray:
+        """
+        Return a 2D slice from vol4d (H,W,Z,T) given a plane and index.
+        For Coronal/Sagittal we transpose to keep display consistent.
+        """
+        plane = plane or "Axial"
+        z_index = int(z_index)
+        t_index = int(t_index)
+
+        if plane == "Sagittal":
+            sl = vol4d[z_index, :, :, t_index]          # (W,Z)
+            return np.transpose(sl)                     # -> (Z,W)
+        if plane == "Coronal":
+            sl = vol4d[:, z_index, :, t_index]          # (H,Z)
+            return np.transpose(sl)                     # -> (Z,H)
+        # Axial
+        return vol4d[:, :, z_index, t_index]            # (H,W)
+
+    def _update_plane_ui_enabled():
+        ft = state.get("current_file_type")
+        vol = state.get("volume")
+        is_rgb = _is_rgb_volume(vol, ft)
+
+        is_nifti = (ft == "NIfTI") and (vol is not None) and (not is_rgb)
+        st = "normal" if is_nifti else "disabled"
+
+        try:
+            plane_combo.configure(state="readonly" if is_nifti else "disabled")
+        except Exception:
+            pass
+
+        try:
+            nifti_canon_cb.configure(state="normal" if ft == "NIfTI" else "disabled")
+        except Exception:
+            pass
+
+        # Force plane to axial for non-NIfTI files
+        if not is_nifti:
+            state["view_plane"] = "Axial"
+            if plane_var.get() != "Axial":
+                plane_var.set("Axial")
 
     # Display pipeline
     def build_display_image():
@@ -1189,7 +1313,40 @@ def create_viewer(file_paths, modality="AUTO"):
         if is_rgb:
             slice_2d = vol.astype(np.float32)
         else:
-            slice_src = vol[..., state["z_index"], state["t_index"]].astype(np.float32)
+            plane = state.get("view_plane", "Axial") if ft == "NIfTI" else "Axial"
+            slice_src = _get_2d_slice(vol, plane, state["z_index"], state["t_index"]).astype(np.float32)
+
+            # --- Aspect ratio correction for NIfTI (anisotropic voxels) ---
+            if ft == "NIfTI" and state.get("nifti_meta") is not None:
+                zooms = state["nifti_meta"].get("zooms")  # expects something like (sx, sy, sz) in mm
+                if zooms and len(zooms) >= 3:
+                    sx, sy, sz = float(zooms[0]), float(zooms[1]), float(zooms[2])
+
+                    # slice_src is already oriented by _get_2d_slice() and possibly transposed.
+                    # After your _get_2d_slice():
+                    #   Axial    -> (H,W) corresponds to (y,x) spacing -> (sy,sx)
+                    #   Coronal  -> (Z,H) corresponds to (z,y) spacing -> (sz,sy)
+                    #   Sagittal -> (Z,W) corresponds to (z,x) spacing -> (sz,sx)
+
+                    if plane == "Axial":
+                        row_sp, col_sp = sy, sx
+                    elif plane == "Coronal":
+                        row_sp, col_sp = sz, sy
+                    else:  # Sagittal
+                        row_sp, col_sp = sz, sx
+
+                    # Rescale rows/cols so pixels represent comparable physical lengths
+                    # Choose a reference spacing (commonly min of the two)
+                    ref = min(row_sp, col_sp)
+                    scale_y = row_sp / ref
+                    scale_x = col_sp / ref
+
+                    # Resize slice_src (nearest for masks, bilinear for images)
+                    pil_tmp = Image.fromarray(slice_src)
+                    new_w = max(1, int(round(pil_tmp.size[0] * scale_x)))
+                    new_h = max(1, int(round(pil_tmp.size[1] * scale_y)))
+                    pil_tmp = pil_tmp.resize((new_w, new_h), Image.BILINEAR)
+                    slice_src = np.array(pil_tmp, dtype=np.float32)
 
             # Apply WL for any grayscale volume when enabled
             if bool(settings["wl_enabled"].get()):
@@ -1236,7 +1393,8 @@ def create_viewer(file_paths, modality="AUTO"):
         state["last_mask_scaled"] = None
 
         if state["overlay_enabled"] and state["mask_volume"] is not None:
-            m = overlay_utils.get_mask_slice(state["mask_volume"], state["z_index"], state["t_index"])
+            plane = state.get("view_plane", "Axial") if ft == "NIfTI" else "Axial"
+            m = _get_2d_slice(state["mask_volume"], plane, state["z_index"], state["t_index"])
             m = np.nan_to_num(m)
             m = np.rint(m).astype(np.int32)
 
@@ -1317,6 +1475,38 @@ def create_viewer(file_paths, modality="AUTO"):
     z_slider.configure(command=on_z_change)
     t_slider.configure(command=on_t_change)
 
+    def _update_z_slider_for_current_volume():
+        vol = state.get("volume")
+        ft = state.get("current_file_type")
+
+        if vol is None:
+            state["z_max"] = 1
+            state["z_index"] = 0
+            z_slider.pack_forget()
+            return
+
+        if _is_rgb_volume(vol, ft):
+            state["z_max"] = 1
+            state["z_index"] = 0
+            z_slider.pack_forget()
+            return
+
+        # Plane is only meaningful for NIfTI; otherwise axial
+        plane = state.get("view_plane", "Axial") if ft == "NIfTI" else "Axial"
+        depth = _plane_depth(vol, plane)
+        depth = max(1, int(depth))
+
+        state["z_max"] = depth
+        state["z_index"] = int(min(depth - 1, depth // 2))
+
+        if depth > 1:
+            z_slider.configure(to=depth - 1)
+            z_slider.set(state["z_index"])
+            if not z_slider.winfo_ismapped():
+                z_slider.pack(fill=tk.X, padx=10, pady=(5, 5))
+        else:
+            z_slider.pack_forget()
+
     def load_current_file():
         idx = state["current_file_index"]
         path = file_paths[idx]
@@ -1366,8 +1556,22 @@ def create_viewer(file_paths, modality="AUTO"):
                     print(f"[ERROR] Single-file DICOM load failed: {e2}")
                     arr = None
 
+
         elif file_type == "NIfTI":
-            arr = nib.load(path).get_fdata()
+
+            arr, nifti_meta_str, nifti_meta = image_loader.load_nifti_with_meta(
+
+                path,
+
+                canonical=bool(settings["nifti_canonical"].get()),
+
+            )
+
+            state["is_nifti"] = True
+
+            state["nifti_meta"] = nifti_meta
+
+            metadata_label.config(text=nifti_meta_str)
         elif file_type == "JPEG/PNG":
             arr = image_loader.load_jpeg_png(path)
         elif file_type == "TIFF":
@@ -1378,7 +1582,9 @@ def create_viewer(file_paths, modality="AUTO"):
         if file_type != "DICOM":
             state["dicom_meta"] = None
             state["is_ct"] = False
-
+        if file_type != "NIfTI":
+            state["is_nifti"] = False
+            state["nifti_meta"] = None
         if arr is None:
             state["volume"] = None
         else:
@@ -1399,6 +1605,7 @@ def create_viewer(file_paths, modality="AUTO"):
             state["t_index"] = 0
             z_slider.pack_forget()
             t_slider.pack_forget()
+
         else:
             vol_shape = state["volume"].shape
             is_rgb_2d = (file_type in ["JPEG/PNG", "TIFF"] and len(vol_shape) == 3 and vol_shape[2] == 3)
@@ -1410,19 +1617,11 @@ def create_viewer(file_paths, modality="AUTO"):
                 state["t_index"] = 0
                 z_slider.pack_forget()
                 t_slider.pack_forget()
-            else:
-                state["z_max"] = vol_shape[2]
-                state["t_max"] = vol_shape[3]
-                state["z_index"] = min(state["z_max"] // 2, state["z_max"] - 1)
-                state["t_index"] = min(state["t_max"] // 2, state["t_max"] - 1)
 
-                if state["z_max"] > 1:
-                    z_slider.configure(to=state["z_max"] - 1)
-                    z_slider.set(state["z_index"])
-                    if not z_slider.winfo_ismapped():
-                        z_slider.pack(fill=tk.X, padx=10, pady=(5, 5))
-                else:
-                    z_slider.pack_forget()
+            else:
+                # T handling stays axis-3 in your normalized volume (H,W,Z,T)
+                state["t_max"] = int(vol_shape[3])
+                state["t_index"] = int(min(state["t_max"] // 2, state["t_max"] - 1))
 
                 if state["t_max"] > 1:
                     t_slider.configure(to=state["t_max"] - 1)
@@ -1432,10 +1631,15 @@ def create_viewer(file_paths, modality="AUTO"):
                 else:
                     t_slider.pack_forget()
 
+                # Z is plane-dependent (Axial/Coronal/Sagittal)
+                _update_z_slider_for_current_volume()
+
         state["zoom_factor"] = 1.0
         state["pan_x"] = 0.0
         state["pan_y"] = 0.0
         _update_wl_ui_enabled()
+        _update_plane_ui_enabled()
+        _update_z_slider_for_current_volume()
 
         # Auto-apply preset if exists (silent)
         apply_session_preset(show_message=False)
